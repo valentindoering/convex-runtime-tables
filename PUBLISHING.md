@@ -1,89 +1,33 @@
-# Publishing
+# Publishing is blocked
 
-This repository is deliberately unpublished. `package.json` contains
-`private: true`, and the GitHub workflow does not run `npm publish` or
-`pkg-pr-new`. Do not remove that guard until the alpha gates, package ownership,
-and release decision are complete.
+This repository is private and unpublished. `package.json` has `private: true`.
+`prepublishOnly`, `preversion`, `version`, `alpha`, and `release` all exit with
+a failure. No workflow publishes a package or creates a release.
 
-In order for other people to install and use this component, you can publish the
-package to npm.
+Do not enable publishing until a fresh production release review gives an
+affirmative GO. The review must confirm every P0/P1 item, deterministic race and
+oracle coverage, packed clean-consumer codegen/query/mutation, genuine
+two-client reactivity, and the 100,000-row live-write benchmark.
 
-You will first need to have an npmjs account with permissions to push to your
-package name.
+After that approval, the first permitted artifact is `0.1.0-alpha.1` on the
+`alpha` dist-tag. A limited non-authoritative Ente integration must precede any
+production-authoritative use.
 
-If this is your first time, here are the recommended steps:
-
-1. Ensure the package.json "name" matches what you want it to be called. It
-   should either be like `my-package` or `@my-org/my-package`. If it's the
-   latter, ensure you have an npmjs account with permissions to push to
-   `my-org`.
-2. `npm login` to login to npmjs.
-3. Remove generated `dist` output and run `npm run build:codegen` against a
-   development deployment.
-4. `npm ci` to install the dependencies with the versions specified in
-   `package-lock.json`.
-5. `npm run build` to build the package fresh.
-6. (Optional) `npm run typecheck` to typecheck the package.
-7. (Optional) `npm run lint` to lint the package.
-8. (Optional) `npm run test` to test the package.
-9. (Optional) `npm pack` will create a .tgz file of the package. You can then
-   try installing it in another project with
-   `npm install ./path/to/your-package.tgz` to sanity check that it works as
-   expected. You can remove the .tgz file after.
-10. `npm publish --access public` to publish the package to npm.
-11. `git tag v0.1.0` to tag the new version.
-12. `git push --follow-tags` to push the tags to the repository. This way, other
-    contributors can always see what code was published with each version.
-    Running `npm version ...` will create these tags and commits automatically.
-
-After the initial publish, release automation can replace the guarded template
-scripts below.
-
-## Package scripts for releasing
-
-In package.json, there are some scripts that are useful for doing releases.
-
-- `preversion` will run the tests and typecheck the code before marking a new
-  version.
-- `version` will open the changelog in vim and then save it before committing
-  the new version.
-- `prepublishOnly` will make a clean build of the package before publishing.
-
-These are not required and can be modified or removed if desired. They will all
-be run automatically when using one of the deployment commands.
-
-## Deploying a new alpha version
+The eventual release gate is mandatory:
 
 ```sh
-npm run alpha
-```
-
-This will create a prerelease version with an `@alpha` tag. It will then publish
-the package to npm and push the code and new tag. Users can install the package
-with `npm install @your-package@alpha`.
-
-## Deploying a new release version
-
-```sh
-npm run release
-```
-
-This will create a patch version and publish as `latest`. It will then publish
-the package to npm and push the code and new tag. To publish a new minor or
-major version, you can run the commands manually:
-
-```sh
-npm version minor # or major
-npm publish
-git push --follow-tags
-```
-
-## Building a one-off package
-
-```sh
+npm ci
+npm run format
+npm run lint
+npm run typecheck
+npm test
+npm run test:race
+npm run test:coverage
 npm run build
-npm pack
+npm run test:consumer
+npm run test:scale
 ```
 
-You can then provide the .tgz file to others to install via
-`npm install ./path/to/your-package.tgz`.
+Do not describe a skipped or failing command as passing. Do not publish directly
+with `npm publish`; release automation must fail closed unless every required
+check has a recorded successful run and the review approval is linked.

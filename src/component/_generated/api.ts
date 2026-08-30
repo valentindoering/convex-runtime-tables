@@ -8,13 +8,16 @@
  * @module
  */
 
+import type * as crons from "../crons.js";
 import type * as data from "../data.js";
 import type * as errors from "../errors.js";
 import type * as indexJobs from "../indexJobs.js";
+import type * as jobRunner from "../jobRunner.js";
 import type * as maintenance from "../maintenance.js";
 import type * as normalization from "../normalization.js";
 import type * as planner from "../planner.js";
 import type * as public_ from "../public.js";
+import type * as testing from "../testing.js";
 import type * as validation from "../validation.js";
 import type * as validators from "../validators.js";
 
@@ -26,13 +29,16 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  crons: typeof crons;
   data: typeof data;
   errors: typeof errors;
   indexJobs: typeof indexJobs;
+  jobRunner: typeof jobRunner;
   maintenance: typeof maintenance;
   normalization: typeof normalization;
   planner: typeof planner;
   public: typeof public_;
+  testing: typeof testing;
   validation: typeof validation;
   validators: typeof validators;
 }> = anyApi as any;

@@ -1,3 +1,4 @@
+import { paginator } from "convex-helpers/server/pagination";
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -28,6 +29,7 @@ import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   MAX_BATCH_BYTES,
   MAX_BATCH_ITEMS,
+  MAX_CURSOR_BYTES,
   MAX_FIELDS,
   MAX_INDEXES,
   ensureActiveTable,
@@ -36,6 +38,8 @@ import {
   validateFieldInput,
   validateFields,
   validateRecordValues,
+  validatePositiveInteger,
+  validateStoredDocumentSize,
   validateScopeId,
   validateSlug,
 } from "./validation.js";
@@ -58,6 +62,10 @@ const scanPlanValidator = v.object({
   kind: v.literal("scan"),
   postFiltered: v.boolean(),
 });
+const tablePlanValidator = v.object({
+  kind: v.literal("table"),
+  postFiltered: v.literal(false),
+});
 const requiredPlanValidator = v.object({
   kind: v.literal("indexRequired"),
   suggestedIndex: v.array(v.id("fields")),
@@ -69,14 +77,44 @@ const tableSchemaValidator = v.object({
 });
 
 export const listTables = query({
-  args: { scopeId: v.string() },
-  returns: v.array(tableDoc),
+  args: { scopeId: v.string(), pagination: paginationValidator },
+  returns: v.object({
+    page: v.array(tableDoc),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.null(), v.string()),
+  }),
   handler: async (ctx, args) => {
     validateScopeId(args.scopeId);
-    return await ctx.db
+    validateOpaqueCursor(args.pagination.cursor, "cursor");
+    validateOpaqueCursor(args.pagination.endCursor, "endCursor");
+    validatePositiveInteger(args.pagination.pageSize, "pageSize", 100, 50);
+    const result = await paginator(ctx.db, schema)
       .query("tables")
       .withIndex("by_scopeId_and_slug", (q) => q.eq("scopeId", args.scopeId))
-      .take(100);
+      .paginate({
+        numItems: args.pagination.pageSize,
+        cursor: args.pagination.cursor ?? null,
+        ...(args.pagination.endCursor
+          ? { endCursor: args.pagination.endCursor }
+          : {}),
+        maximumRowsRead: validatePositiveInteger(
+          args.pagination.maximumRowsRead,
+          "maximumRowsRead",
+          1_000,
+          500,
+        ),
+        maximumBytesRead: validatePositiveInteger(
+          args.pagination.maximumBytesRead,
+          "maximumBytesRead",
+          4_000_000,
+          4_000_000,
+        ),
+      });
+    return {
+      page: result.page,
+      isDone: result.isDone,
+      continueCursor: result.isDone ? null : result.continueCursor,
+    };
   },
 });
 
@@ -123,7 +161,7 @@ export const queryRecords = query({
     page: v.array(recordDoc),
     isDone: v.boolean(),
     continueCursor: v.union(v.null(), v.string()),
-    plan: v.union(indexPlanValidator, scanPlanValidator),
+    plan: v.union(indexPlanValidator, tablePlanValidator, scanPlanValidator),
   }),
   handler: async (ctx, args) =>
     await executeQuery(
@@ -143,6 +181,7 @@ export const explainQuery = query({
   },
   returns: v.union(
     indexPlanValidator,
+    tablePlanValidator,
     scanPlanValidator,
     requiredPlanValidator,
   ),
@@ -191,16 +230,19 @@ export const createTable = mutation({
       name: args.name,
       state: "active",
       schemaRev: 1,
+      generation: 0,
       createdAt: now,
       updatedAt: now,
     });
     const fields: Doc<"fields">[] = [];
     for (const input of args.fields) {
       if (input.constraints?.referenceTableId) {
-        ensureScope(
-          await ctx.db.get("tables", input.constraints.referenceTableId),
-          args.scopeId,
-          "Reference target table",
+        ensureActiveTable(
+          ensureScope(
+            await ctx.db.get("tables", input.constraints.referenceTableId),
+            args.scopeId,
+            "Reference target table",
+          ),
         );
       }
       const fieldId = await ctx.db.insert("fields", {
@@ -315,10 +357,12 @@ export const addField = mutation({
       );
     }
     if (args.field.constraints?.referenceTableId) {
-      ensureScope(
-        await ctx.db.get("tables", args.field.constraints.referenceTableId),
-        args.scopeId,
-        "Reference target table",
+      ensureActiveTable(
+        ensureScope(
+          await ctx.db.get("tables", args.field.constraints.referenceTableId),
+          args.scopeId,
+          "Reference target table",
+        ),
       );
     }
     const now = Date.now();
@@ -394,6 +438,12 @@ export const insertRecords = mutation({
         input.values as Record<string, Scalar>,
       ),
     }));
+    await validateReferenceValues(
+      ctx,
+      args.scopeId,
+      fields,
+      normalizedRecords.map((record) => record.values),
+    );
     const hash = await secureRequestHash(normalizedRecords);
     const cached = await readIdempotency(ctx, args, "insert", hash);
     if (cached) return cached;
@@ -401,6 +451,7 @@ export const insertRecords = mutation({
     const now = Date.now();
     for (const input of normalizedRecords) {
       const values = input.values;
+      validateRecordDocument(args.scopeId, args.tableId, values, 1, now, now);
       const recordId = await ctx.db.insert("records", {
         scopeId: args.scopeId,
         tableId: args.tableId,
@@ -451,9 +502,16 @@ export const patchRecord = mutation({
     };
     for (const fieldId of args.patch.unsetFieldIds ?? [])
       delete nextValues[fieldId];
-    const values = validateRecordValues(
-      await loadFields(ctx, args.scopeId, args.tableId),
-      nextValues,
+    const fields = await loadFields(ctx, args.scopeId, args.tableId);
+    const values = validateRecordValues(fields, nextValues);
+    await validateReferenceValues(ctx, args.scopeId, fields, [values]);
+    validateRecordDocument(
+      args.scopeId,
+      args.tableId,
+      values,
+      current.rev + 1,
+      current.createdAt,
+      Date.now(),
     );
     await ctx.db.patch("records", current._id, {
       values,
@@ -501,6 +559,12 @@ export const upsertRecords = mutation({
         input.values as Record<string, Scalar>,
       ),
     }));
+    await validateReferenceValues(
+      ctx,
+      args.scopeId,
+      fields,
+      normalizedRecords.map((record) => record.values),
+    );
     const hash = await secureRequestHash({
       indexId: args.uniqueIndexId,
       records: normalizedRecords,
@@ -511,6 +575,11 @@ export const upsertRecords = mutation({
     for (const input of normalizedRecords) {
       const values = input.values;
       const [k0, k1, k2] = normalizeIndexSlots(index.fieldIds, values);
+      invariant(
+        ![k0, k1, k2].slice(0, index.fieldIds.length).includes(null),
+        "VALIDATION_FAILED",
+        "Upsert unique keys cannot contain null or missing values",
+      );
       const matches = await ctx.db
         .query("indexEntries")
         .withIndex(
@@ -534,6 +603,14 @@ export const upsertRecords = mutation({
         : null;
       if (existing) {
         ensureScope(existing, args.scopeId, "Record");
+        validateRecordDocument(
+          args.scopeId,
+          args.tableId,
+          values,
+          existing.rev + 1,
+          existing.createdAt,
+          Date.now(),
+        );
         await ctx.db.patch("records", existing._id, {
           values,
           rev: existing.rev + 1,
@@ -544,6 +621,7 @@ export const upsertRecords = mutation({
         results.push({ recordId: updated._id, rev: updated.rev });
       } else {
         const now = Date.now();
+        validateRecordDocument(args.scopeId, args.tableId, values, 1, now, now);
         const recordId = await ctx.db.insert("records", {
           scopeId: args.scopeId,
           tableId: args.tableId,
@@ -625,6 +703,8 @@ export const createIndex = mutation({
       fieldIds: args.fieldIds,
       unique: args.unique,
       state: "building",
+      maintenanceState: "backfilling",
+      generation: 1,
       failure: null,
       createdAt: now,
       updatedAt: now,
@@ -635,10 +715,14 @@ export const createIndex = mutation({
       "buildIndex",
       indexId,
       "backfill",
+      1,
     );
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
-      jobId,
+    await ctx.db.patch("indexDefinitions", indexId, { activeJobId: jobId });
+    await ctx.db.patch("tables", table._id, {
+      schemaRev: table.schemaRev + 1,
+      updatedAt: now,
     });
+    await scheduleJob(ctx, jobId, "buildIndex", 1, "backfill");
     return { indexId, jobId };
   },
 });
@@ -657,22 +741,35 @@ export const verifyIndex = mutation({
       "INDEX_NOT_READY",
       "Index is being deleted",
     );
-    await ctx.db.patch("indexDefinitions", index._id, {
-      state: "verifying",
-      failure: null,
-      updatedAt: Date.now(),
-    });
-    const jobId = await createJob(
+    return await startIndexMaintenance(
       ctx,
-      args.scopeId,
-      "buildIndex",
-      index._id,
+      index,
+      "verifyIndex",
       "verifyRecords",
     );
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
-      jobId,
-    });
-    return { jobId };
+  },
+});
+
+export const repairIndex = mutation({
+  args: { scopeId: v.string(), indexId: v.id("indexDefinitions") },
+  returns: v.object({ jobId: v.id("jobs") }),
+  handler: async (ctx, args) => {
+    const index = ensureScope(
+      await ctx.db.get("indexDefinitions", args.indexId),
+      args.scopeId,
+      "Index",
+    );
+    invariant(
+      index.state !== "deleting",
+      "INDEX_NOT_READY",
+      "Index is being deleted",
+    );
+    return await startIndexMaintenance(
+      ctx,
+      index,
+      "repairIndex",
+      "repairRecords",
+    );
   },
 });
 
@@ -690,22 +787,12 @@ export const retryIndexBuild = mutation({
       "INDEX_NOT_READY",
       "Only failed indexes can be retried",
     );
-    await ctx.db.patch("indexDefinitions", index._id, {
-      state: "verifying",
-      failure: null,
-      updatedAt: Date.now(),
-    });
-    const jobId = await createJob(
+    return await startIndexMaintenance(
       ctx,
-      args.scopeId,
-      "buildIndex",
-      index._id,
-      "verifyRecords",
+      index,
+      "repairIndex",
+      "repairRecords",
     );
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
-      jobId,
-    });
-    return { jobId };
   },
 });
 
@@ -718,20 +805,36 @@ export const deleteIndex = mutation({
       args.scopeId,
       "Index",
     );
-    await ctx.db.patch("indexDefinitions", index._id, {
-      state: "deleting",
-      updatedAt: Date.now(),
-    });
+    if (index.state === "deleting" && index.activeJobId) {
+      const activeJob = await ctx.db.get("jobs", index.activeJobId);
+      if (activeJob && !isTerminalJob(activeJob.state)) {
+        return { jobId: index.activeJobId };
+      }
+    }
+    const generation = (index.generation ?? 0) + 1;
     const jobId = await createJob(
       ctx,
       args.scopeId,
       "deleteIndex",
       index._id,
       "deleteEntries",
+      generation,
     );
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processDeleteIndexJob, {
-      jobId,
+    await ctx.db.patch("indexDefinitions", index._id, {
+      state: "deleting",
+      maintenanceState: "deleting",
+      generation,
+      activeJobId: jobId,
+      updatedAt: Date.now(),
     });
+    const table = await ctx.db.get("tables", index.tableId);
+    if (table && table.scopeId === args.scopeId) {
+      await ctx.db.patch("tables", table._id, {
+        schemaRev: table.schemaRev + 1,
+        updatedAt: Date.now(),
+      });
+    }
+    await scheduleJob(ctx, jobId, "deleteIndex", generation, "deleteEntries");
     return { jobId };
   },
 });
@@ -741,23 +844,45 @@ export const deleteTable = mutation({
   returns: v.object({ jobId: v.id("jobs") }),
   handler: async (ctx, args) => {
     const table = await loadTable(ctx, args.scopeId, args.tableId);
-    await ctx.db.patch("tables", table._id, {
-      state: "deleting",
-      updatedAt: Date.now(),
-    });
+    if (table.state === "deleting" && table.activeJobId) {
+      const activeJob = await ctx.db.get("jobs", table.activeJobId);
+      if (activeJob && !isTerminalJob(activeJob.state)) {
+        return { jobId: table.activeJobId };
+      }
+    }
+    const generation = (table.generation ?? 0) + 1;
     const jobId = await createJob(
       ctx,
       args.scopeId,
       "deleteTable",
       table._id,
       "deleteEntries",
+      generation,
     );
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processDeleteTableJob, {
-      jobId,
+    await ctx.db.patch("tables", table._id, {
+      state: "deleting",
+      generation,
+      activeJobId: jobId,
+      schemaRev: table.schemaRev + 1,
+      updatedAt: Date.now(),
     });
+    await scheduleJob(ctx, jobId, "deleteTable", generation, "deleteEntries");
     return { jobId };
   },
 });
+
+function validateOpaqueCursor(value: string | undefined, label: string): void {
+  if (value === undefined) return;
+  invariant(
+    new TextEncoder().encode(value).byteLength <= MAX_CURSOR_BYTES,
+    "INVALID_CURSOR",
+    `${label} exceeds ${MAX_CURSOR_BYTES} bytes`,
+  );
+}
+
+function isTerminalJob(state: Doc<"jobs">["state"]): boolean {
+  return state === "succeeded" || state === "failed" || state === "superseded";
+}
 
 async function loadAllIndexes(
   ctx: Parameters<typeof loadIndexesForWrites>[0],
@@ -790,6 +915,7 @@ async function createJob(
   kind: Doc<"jobs">["kind"],
   targetId: string,
   phase: Doc<"jobs">["phase"],
+  generation: number,
 ): Promise<Id<"jobs">> {
   const now = Date.now();
   return await ctx.db.insert("jobs", {
@@ -800,10 +926,77 @@ async function createJob(
     phase,
     cursor: null,
     progress: 0,
-    attempts: 0,
+    generation,
+    batchCount: 0,
+    retryCount: 0,
     lastError: null,
     createdAt: now,
     updatedAt: now,
+  });
+}
+
+async function startIndexMaintenance(
+  ctx: MutationCtx,
+  index: Doc<"indexDefinitions">,
+  kind: "repairIndex" | "verifyIndex",
+  phase: "repairRecords" | "verifyRecords",
+): Promise<{ jobId: Id<"jobs"> }> {
+  if (
+    index.activeJobId &&
+    index.maintenanceState !== undefined &&
+    index.maintenanceState !== "idle" &&
+    index.maintenanceState !== "failed"
+  ) {
+    const active = await ctx.db.get("jobs", index.activeJobId);
+    if (
+      active &&
+      active.kind === kind &&
+      active.state !== "succeeded" &&
+      active.state !== "failed" &&
+      active.state !== "superseded"
+    ) {
+      return { jobId: index.activeJobId };
+    }
+  }
+  invariant(
+    index.state === "ready" ||
+      index.state === "failed" ||
+      index.state === "building",
+    "INDEX_NOT_READY",
+    "Index lifecycle state does not allow maintenance",
+  );
+  const generation = (index.generation ?? 0) + 1;
+  const jobId = await createJob(
+    ctx,
+    index.scopeId,
+    kind,
+    index._id,
+    phase,
+    generation,
+  );
+  await ctx.db.patch("indexDefinitions", index._id, {
+    generation,
+    activeJobId: jobId,
+    maintenanceState: kind === "repairIndex" ? "repairing" : "verifying",
+    failure: null,
+    updatedAt: Date.now(),
+  });
+  await scheduleJob(ctx, jobId, kind, generation, phase);
+  return { jobId };
+}
+
+async function scheduleJob(
+  ctx: MutationCtx,
+  jobId: Id<"jobs">,
+  kind: Doc<"jobs">["kind"],
+  generation: number,
+  phase: Doc<"jobs">["phase"],
+): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.jobRunner.process, {
+    jobId,
+    kind,
+    generation,
+    phase,
   });
 }
 
@@ -836,7 +1029,7 @@ async function readIdempotency(
   }
   invariant(
     existing.requestHash === hash,
-    "IDEMPOTENCY_KEY_REUSED",
+    "IDEMPOTENCY_MISMATCH",
     "Idempotency key was reused with a different request",
   );
   return existing.resultSummary;
@@ -861,11 +1054,56 @@ async function storeIdempotency(
     expiresAt: now + DEFAULT_IDEMPOTENCY_TTL_MS,
     createdAt: now,
   });
-  await ctx.scheduler.runAfter(
-    DEFAULT_IDEMPOTENCY_TTL_MS,
-    internal.maintenance.cleanupIdempotency,
-    { scopeId: args.scopeId },
+}
+
+async function validateReferenceValues(
+  ctx: MutationCtx,
+  scopeId: string,
+  fields: Doc<"fields">[],
+  records: Array<Record<string, Scalar>>,
+): Promise<void> {
+  const references = new Map<
+    string,
+    { fieldId: Id<"fields">; targetTableId: Id<"tables">; value: string }
+  >();
+  for (const field of fields) {
+    const targetTableId = field.constraints.referenceTableId;
+    if (field.type !== "reference" || !targetTableId) continue;
+    ensureActiveTable(
+      ensureScope(
+        await ctx.db.get("tables", targetTableId),
+        scopeId,
+        "Reference target table",
+      ),
+    );
+    for (const record of records) {
+      const value = record[field._id];
+      if (typeof value === "string") {
+        references.set(`${targetTableId}:${value}`, {
+          fieldId: field._id,
+          targetTableId,
+          value,
+        });
+      }
+    }
+  }
+  invariant(
+    references.size <= 1_000,
+    "LIMIT_EXCEEDED",
+    "A batch may validate at most 1,000 distinct references",
   );
+  for (const reference of references.values()) {
+    const recordId = ctx.db.normalizeId("records", reference.value);
+    const target = recordId ? await ctx.db.get("records", recordId) : null;
+    invariant(
+      target &&
+        target.scopeId === scopeId &&
+        target.tableId === reference.targetTableId,
+      "VALIDATION_FAILED",
+      "Reference target does not exist in the configured table",
+      { fieldId: reference.fieldId },
+    );
+  }
 }
 
 function validateBatch(records: readonly unknown[]): void {
@@ -895,9 +1133,23 @@ function assertRecordRev(record: Doc<"records">, expected: number): void {
   if (record.rev !== expected) {
     fail("CONFLICT", "Record revision changed", {
       currentRev: record.rev,
-      currentRecord: JSON.stringify(record),
+      recordId: record._id,
     });
   }
+}
+
+function validateRecordDocument(
+  scopeId: string,
+  tableId: Id<"tables">,
+  values: Record<string, Scalar>,
+  rev: number,
+  createdAt: number,
+  updatedAt: number,
+): void {
+  validateStoredDocumentSize(
+    { scopeId, tableId, values, rev, createdAt, updatedAt },
+    "Record",
+  );
 }
 
 function validateName(value: string, label: string): void {

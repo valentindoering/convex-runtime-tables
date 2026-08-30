@@ -98,6 +98,10 @@ export class RuntimeTables {
     return ctx.runMutation(this.component.public.verifyIndex, args);
   }
 
+  repairIndex(ctx: WriteCtx, args: PublicArgs<"repairIndex">) {
+    return ctx.runMutation(this.component.public.repairIndex, args);
+  }
+
   retryIndexBuild(ctx: WriteCtx, args: PublicArgs<"retryIndexBuild">) {
     return ctx.runMutation(this.component.public.retryIndexBuild, args);
   }

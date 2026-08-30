@@ -1,0 +1,26 @@
+name: Nightly deployment gates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Packed consumer and genuine two-client reactivity
+        run: npm run test:consumer
+      - name: 100k concurrent-write scale and oracle suite
+        run: npm run test:scale

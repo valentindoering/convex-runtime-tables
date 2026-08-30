@@ -4,7 +4,7 @@ import {
   compareScalar,
   normalizeIndexSlots,
   normalizeNumber,
-  requestHash,
+  normalizeScalar,
   secureRequestHash,
   type Scalar,
 } from "./normalization.js";
@@ -36,16 +36,19 @@ describe("normalization", () => {
     }
   });
 
-  test("hashes equivalent objects independently of key insertion order", () => {
+  test("canonicalizes equivalent objects independently of key insertion order", () => {
     const first = { b: [2, 3], a: { y: true, x: -0 } };
     const second = { a: { x: 0, y: true }, b: [2, 3] };
     expect(canonicalStringify(first)).toBe(canonicalStringify(second));
-    expect(requestHash(first)).toBe(requestHash(second));
   });
 
   test("uses SHA-256 for idempotency request hashes", async () => {
     const digest = await secureRequestHash({ value: "stable" });
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(digest).toBe(await secureRequestHash({ value: "stable" }));
+  });
+
+  test("normalizes indexed text to NFC", () => {
+    expect(normalizeScalar("e\u0301")).toBe("\u00e9");
   });
 });

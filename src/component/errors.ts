@@ -7,10 +7,11 @@ export type RuntimeTablesErrorCode =
   | "CONFLICT"
   | "UNIQUE_CONFLICT"
   | "INDEX_REQUIRED"
+  | "UNSUPPORTED_QUERY"
   | "INDEX_NOT_READY"
   | "INVALID_CURSOR"
   | "LIMIT_EXCEEDED"
-  | "IDEMPOTENCY_KEY_REUSED"
+  | "IDEMPOTENCY_MISMATCH"
   | "TABLE_DELETING";
 
 export function fail(

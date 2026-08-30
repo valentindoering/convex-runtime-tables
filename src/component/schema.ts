@@ -1,14 +1,15 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
-  fieldConstraintsValidator,
   fieldStateValidator,
   fieldTypeValidator,
   indexStateValidator,
   jobKindValidator,
   jobPhaseValidator,
   jobStateValidator,
+  maintenanceStateValidator,
   scalarValidator,
+  storedFieldConstraintsValidator,
 } from "./validators.js";
 
 export default defineSchema({
@@ -18,6 +19,8 @@ export default defineSchema({
     name: v.string(),
     state: v.union(v.literal("active"), v.literal("deleting")),
     schemaRev: v.number(),
+    generation: v.optional(v.number()),
+    activeJobId: v.optional(v.id("jobs")),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_scopeId_and_slug", ["scopeId", "slug"]),
@@ -29,7 +32,7 @@ export default defineSchema({
     name: v.string(),
     type: fieldTypeValidator,
     required: v.boolean(),
-    constraints: fieldConstraintsValidator,
+    constraints: storedFieldConstraintsValidator,
     state: fieldStateValidator,
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -53,6 +56,22 @@ export default defineSchema({
     fieldIds: v.array(v.id("fields")),
     unique: v.boolean(),
     state: indexStateValidator,
+    maintenanceState: v.optional(maintenanceStateValidator),
+    generation: v.optional(v.number()),
+    activeJobId: v.optional(v.id("jobs")),
+    verification: v.optional(
+      v.object({
+        missing: v.number(),
+        orphaned: v.number(),
+        stale: v.number(),
+        duplicate: v.number(),
+        missingSamples: v.array(v.string()),
+        orphanedSamples: v.array(v.string()),
+        staleSamples: v.array(v.string()),
+        duplicateSamples: v.array(v.string()),
+        checkedAt: v.number(),
+      }),
+    ),
     failure: v.union(
       v.null(),
       v.object({
@@ -113,7 +132,8 @@ export default defineSchema({
       "operation",
       "key",
     ])
-    .index("by_scopeId_and_expiresAt", ["scopeId", "expiresAt"]),
+    .index("by_scopeId_and_expiresAt", ["scopeId", "expiresAt"])
+    .index("by_expiresAt", ["expiresAt"]),
 
   jobs: defineTable({
     scopeId: v.string(),
@@ -123,14 +143,37 @@ export default defineSchema({
     phase: jobPhaseValidator,
     cursor: v.union(v.null(), v.string()),
     progress: v.number(),
-    attempts: v.number(),
+    generation: v.optional(v.number()),
+    batchCount: v.optional(v.number()),
+    retryCount: v.optional(v.number()),
+    // Kept for alpha-schema migration. New jobs use batchCount/retryCount.
+    attempts: v.optional(v.number()),
+    verification: v.optional(
+      v.object({
+        missing: v.number(),
+        orphaned: v.number(),
+        stale: v.number(),
+        duplicate: v.number(),
+        missingSamples: v.array(v.string()),
+        orphanedSamples: v.array(v.string()),
+        staleSamples: v.array(v.string()),
+        duplicateSamples: v.array(v.string()),
+      }),
+    ),
     lastError: v.union(
       v.null(),
       v.object({ code: v.string(), message: v.string() }),
     ),
     createdAt: v.number(),
     updatedAt: v.number(),
+    completedAt: v.optional(v.number()),
+    retentionExpiresAt: v.optional(v.number()),
   })
     .index("by_scopeId_and_state", ["scopeId", "state"])
-    .index("by_scopeId_and_targetId", ["scopeId", "targetId"]),
+    .index("by_scopeId_and_targetId", ["scopeId", "targetId"])
+    .index("by_scopeId_and_retentionExpiresAt", [
+      "scopeId",
+      "retentionExpiresAt",
+    ])
+    .index("by_retentionExpiresAt", ["retentionExpiresAt"]),
 });

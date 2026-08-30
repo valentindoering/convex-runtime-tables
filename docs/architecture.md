@@ -37,23 +37,31 @@ arrays. Convex preserved distinct encodings for `-0` and `0`; it also accepted
 - string order is the native case-sensitive binary order;
 - timestamps are safe integer epoch milliseconds.
 
-The same normalization function is used by writes, verification, uniqueness
-checks, query bounds, and scan comparison. Tests cover these invariants.
+Indexed text is normalized to NFC and capped at 1 KiB. The same normalization
+function is used by writes, verification, uniqueness checks, query bounds, and
+scan comparison. Tests cover these invariants.
 
 ## Online index lifecycle
 
 `createIndex` inserts a `building` definition and a durable job in one mutation.
-Writers maintain entries for `building`, `verifying`, `ready`, and `failed`
-definitions. Backfill reads records in bounded cursor pages and upserts one
-entry per record.
+The definition has a monotonic `generation`, one `activeJobId`, and a separate
+`maintenanceState`. Every scheduled call carries the job ID, generation, and
+phase. A batch checks all three before writing, rescheduling, or transitioning.
+A stale call marks its job `superseded` and performs no target writes.
 
-After backfill, the definition enters `verifying`. Verification walks records
-and entries in separate resumable phases. It repairs stale or orphaned entries
-and rejects duplicate tuples for unique indexes. Writers enforce uniqueness
-during `verifying`, which acts as the final write barrier: a concurrent writer
-that read the previous definition state conflicts with the state transition and
-retries against the new state. Only then does the verifier mark the index
-`ready`.
+The build pipeline is backfill, repair, independent verification, then ready.
+Backfill and repair may insert, patch, or delete sidecar entries. Verification
+never mutates sidecars. It records missing, orphaned, stale, and duplicate
+counts plus ten IDs per category. Any mismatch fails the build. A ready index
+remains queryable during an operator-requested verification because serving
+state and maintenance state are separate.
+
+Unique enforcement is intentionally conservative during lifecycle work. A
+building index does not reject ordinary writes; repair and read-only
+verification must prove that its complete key set is unique before it becomes
+ready. A failed index is neither selected by the planner nor used to enforce
+uniqueness. Existing ready indexes continue enforcing non-null keys while an
+operator verification runs.
 
 Index and table deletion first changes visible state so planners and writers
 stop selecting the resource. Workers then delete bounded batches and finally
@@ -65,10 +73,12 @@ remove metadata. No worker relies on process memory.
 - Four indexes per table.
 - Three fields per index.
 - 100 records and 1.5 MB per write batch.
-- 700 KB record safety budget.
+- 700 KB record safety budget measured with `getConvexSize`.
+- 1 KiB per indexed string and 32 KB per generated index-entry document.
 - 100 records per query page.
 - 200 records for bounded scan fallback.
 - Four million bytes and 1,000 sidecar rows as hard query read caps.
+- 8 KiB encoded cursor cap.
 
 These are domain limits below Convex platform limits. They should be revised
 only with transaction metrics and benchmark evidence.

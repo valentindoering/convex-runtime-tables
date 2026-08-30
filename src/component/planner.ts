@@ -12,11 +12,19 @@ import { fail, invariant } from "./errors.js";
 import {
   compareScalar,
   normalizeScalar,
-  requestHash,
+  canonicalStringify,
   type Scalar,
 } from "./normalization.js";
 import schema from "./schema.js";
-import { SCAN_LIMIT, ensureActiveTable, validateValue } from "./validation.js";
+import {
+  MAX_BYTES_READ,
+  MAX_CURSOR_BYTES,
+  MAX_ROWS_READ,
+  SCAN_LIMIT,
+  ensureActiveTable,
+  validatePositiveInteger,
+  validateValue,
+} from "./validation.js";
 
 export type Predicate = {
   fieldId: Id<"fields">;
@@ -42,6 +50,7 @@ export type Pagination = {
 
 export type QueryPlan =
   | { kind: "index"; indexId: Id<"indexDefinitions">; postFiltered: boolean }
+  | { kind: "table"; postFiltered: false }
   | { kind: "scan"; postFiltered: boolean }
   | { kind: "indexRequired"; suggestedIndex: Id<"fields">[] };
 
@@ -56,27 +65,40 @@ type RangeBound = { value: Scalar; inclusive: boolean };
 type RangeBounds = { lower?: RangeBound; upper?: RangeBound };
 
 type IndexCursor = {
-  version: 1;
+  version: 2;
   kind: "index";
   scopeId: string;
   indexId: string;
-  queryHash: string;
+  plan: string;
+  schemaRev: number;
+  direction: "asc" | "desc";
+  inner: string | null;
+};
+
+type TableCursor = {
+  version: 2;
+  kind: "table";
+  scopeId: string;
+  tableId: string;
+  plan: string;
+  schemaRev: number;
   direction: "asc" | "desc";
   inner: string | null;
 };
 
 type ScanCursor = {
-  version: 1;
+  version: 2;
   kind: "scan";
   scopeId: string;
   tableId: string;
-  queryHash: string;
+  plan: string;
+  schemaRev: number;
   direction: "asc" | "desc";
   boundaryValues: Scalar[];
   recordId: string;
 };
 
-type CursorPayload = IndexCursor | ScanCursor;
+type CursorPayload = IndexCursor | TableCursor | ScanCursor;
 
 export async function explain(
   ctx: QueryCtx,
@@ -87,6 +109,7 @@ export async function explain(
   const table = await loadTable(ctx, scopeId, tableId);
   ensureActiveTable(table);
   const fields = await validateQuery(ctx, scopeId, tableId, query);
+  if (isDefaultTableQuery(query)) return { kind: "table", postFiltered: false };
   const selected = await selectIndex(ctx, scopeId, tableId, query);
   if (selected) {
     return {
@@ -102,7 +125,10 @@ export async function explain(
     )
     .take(SCAN_LIMIT + 1);
   if (rows.length <= SCAN_LIMIT) return { kind: "scan", postFiltered: false };
-  return { kind: "indexRequired", suggestedIndex: suggestIndex(query, fields) };
+  const suggestion = suggestIndex(query, fields);
+  if (!suggestion)
+    fail("UNSUPPORTED_QUERY", "No runtime index can satisfy this query");
+  return { kind: "indexRequired", suggestedIndex: suggestion };
 }
 
 export async function queryRecords(
@@ -117,16 +143,13 @@ export async function queryRecords(
   continueCursor: string | null;
   plan: Exclude<QueryPlan, { kind: "indexRequired" }>;
 }> {
-  invariant(
-    Number.isInteger(pagination.pageSize) &&
-      pagination.pageSize >= 1 &&
-      pagination.pageSize <= 100,
-    "VALIDATION_FAILED",
-    "pageSize must be an integer between 1 and 100",
-  );
+  validatePagination(pagination);
   const table = await loadTable(ctx, scopeId, tableId);
   ensureActiveTable(table);
   const fields = await validateQuery(ctx, scopeId, tableId, query);
+  if (isDefaultTableQuery(query)) {
+    return await tablePage(ctx, scopeId, table, query, pagination);
+  }
   const selected = await selectIndex(ctx, scopeId, tableId, query);
   if (selected)
     return await indexedPage(
@@ -136,8 +159,17 @@ export async function queryRecords(
       query,
       pagination,
       selected,
+      table.schemaRev,
     );
-  return await scannedPage(ctx, scopeId, tableId, query, pagination, fields);
+  return await scannedPage(
+    ctx,
+    scopeId,
+    tableId,
+    query,
+    pagination,
+    fields,
+    table.schemaRev,
+  );
 }
 
 async function validateQuery(
@@ -150,6 +182,16 @@ async function validateQuery(
     query.where.length <= 16,
     "LIMIT_EXCEEDED",
     "Queries allow at most 16 predicates",
+  );
+  const rangeFields = new Set(
+    query.where
+      .filter((predicate) => predicate.op !== "eq")
+      .map((predicate) => predicate.fieldId as string),
+  );
+  invariant(
+    rangeFields.size <= 1,
+    "UNSUPPORTED_QUERY",
+    "Queries with ranges on more than one field are unsupported",
   );
   const fields = (await loadFields(ctx, scopeId, tableId)).filter(
     (field) => field.state === "active",
@@ -283,16 +325,26 @@ async function indexedPage(
   query: QuerySpec,
   pagination: Pagination,
   selected: SelectedIndex,
+  schemaRev: number,
 ) {
   const direction = query.orderBy?.direction ?? "asc";
-  const hash = requestHash(query);
+  const plan = canonicalPlan({
+    kind: "index",
+    scopeId,
+    tableId,
+    schemaRev,
+    indexId: selected.definition._id,
+    direction,
+    query,
+  });
   const cursor = pagination.cursor
     ? decodeCursor(
         pagination.cursor,
         "index",
         scopeId,
         selected.definition._id,
-        hash,
+        plan,
+        schemaRev,
         direction,
       )
     : null;
@@ -302,7 +354,8 @@ async function indexedPage(
         "index",
         scopeId,
         selected.definition._id,
-        hash,
+        plan,
+        schemaRev,
         direction,
       )
     : null;
@@ -311,11 +364,8 @@ async function indexedPage(
     numItems: pagination.pageSize,
     cursor: cursor?.inner ?? null,
     ...(endCursor ? { endCursor: endCursor.inner } : {}),
-    maximumRowsRead: Math.min(pagination.maximumRowsRead ?? 500, 1_000),
-    maximumBytesRead: Math.min(
-      pagination.maximumBytesRead ?? 4_000_000,
-      4_000_000,
-    ),
+    maximumRowsRead: pagination.maximumRowsRead ?? 500,
+    maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
   });
   const hydrated = await Promise.all(
     result.page.map((entry) => ctx.db.get("records", entry.recordId)),
@@ -333,11 +383,12 @@ async function indexedPage(
     continueCursor: result.isDone
       ? null
       : encodeCursor({
-          version: 1,
+          version: 2,
           kind: "index",
           scopeId,
           indexId: selected.definition._id,
-          queryHash: hash,
+          plan,
+          schemaRev,
           direction,
           inner: result.continueCursor,
         }),
@@ -346,6 +397,76 @@ async function indexedPage(
       indexId: selected.definition._id,
       postFiltered: selected.postFiltered,
     },
+  };
+}
+
+async function tablePage(
+  ctx: QueryCtx,
+  scopeId: string,
+  table: Doc<"tables">,
+  query: QuerySpec,
+  pagination: Pagination,
+) {
+  const direction = "asc" as const;
+  const plan = canonicalPlan({
+    kind: "table",
+    scopeId,
+    tableId: table._id,
+    schemaRev: table.schemaRev,
+    direction,
+    query,
+  });
+  const cursor = pagination.cursor
+    ? decodeCursor(
+        pagination.cursor,
+        "table",
+        scopeId,
+        table._id,
+        plan,
+        table.schemaRev,
+        direction,
+      )
+    : null;
+  const endCursor = pagination.endCursor
+    ? decodeCursor(
+        pagination.endCursor,
+        "table",
+        scopeId,
+        table._id,
+        plan,
+        table.schemaRev,
+        direction,
+      )
+    : null;
+  const result = await paginator(ctx.db, schema)
+    .query("records")
+    .withIndex("by_scopeId_and_tableId", (q) =>
+      q.eq("scopeId", scopeId).eq("tableId", table._id),
+    )
+    .order(direction)
+    .paginate({
+      numItems: pagination.pageSize,
+      cursor: cursor?.inner ?? null,
+      ...(endCursor ? { endCursor: endCursor.inner } : {}),
+      maximumRowsRead: pagination.maximumRowsRead ?? 500,
+      maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
+    });
+  return {
+    page: result.page,
+    isDone: result.isDone,
+    continueCursor: result.isDone
+      ? null
+      : encodeCursor({
+          version: 2,
+          kind: "table",
+          scopeId,
+          tableId: table._id,
+          plan,
+          schemaRev: table.schemaRev,
+          direction,
+          inner: result.continueCursor,
+        }),
+    plan: { kind: "table" as const, postFiltered: false as const },
   };
 }
 
@@ -437,6 +558,7 @@ async function scannedPage(
   query: QuerySpec,
   pagination: Pagination,
   fields: Doc<"fields">[],
+  schemaRev: number,
 ) {
   const records = await ctx.db
     .query("records")
@@ -446,15 +568,33 @@ async function scannedPage(
     .take(SCAN_LIMIT + 1);
   if (records.length > SCAN_LIMIT) {
     const suggestedIndex = suggestIndex(query, fields);
+    if (!suggestedIndex) {
+      fail("UNSUPPORTED_QUERY", "No runtime index can satisfy this query");
+    }
     fail("INDEX_REQUIRED", "This query requires a runtime index", {
       suggestedIndex: JSON.stringify(suggestedIndex),
     });
   }
   const direction = query.orderBy?.direction ?? "asc";
   const orderFields = query.orderBy?.fieldIds ?? [];
-  const hash = requestHash(query);
+  const plan = canonicalPlan({
+    kind: "scan",
+    scopeId,
+    tableId,
+    schemaRev,
+    direction,
+    query,
+  });
   const cursor = pagination.cursor
-    ? decodeCursor(pagination.cursor, "scan", scopeId, tableId, hash, direction)
+    ? decodeCursor(
+        pagination.cursor,
+        "scan",
+        scopeId,
+        tableId,
+        plan,
+        schemaRev,
+        direction,
+      )
     : null;
   const filtered = records.filter((record) => matchesAll(record, query.where));
   filtered.sort((left, right) =>
@@ -482,11 +622,12 @@ async function scannedPage(
       isDone || !last
         ? null
         : encodeCursor({
-            version: 1,
+            version: 2,
             kind: "scan",
             scopeId,
             tableId,
-            queryHash: hash,
+            plan,
+            schemaRev,
             direction,
             boundaryValues: orderFields.map(
               (fieldId) => last.values[fieldId] ?? null,
@@ -554,7 +695,7 @@ function compareBoundary(
 function suggestIndex(
   query: QuerySpec,
   fields: Doc<"fields">[],
-): Id<"fields">[] {
+): Id<"fields">[] | null {
   const valid = new Set(fields.map((field) => field._id));
   const equality = query.where
     .filter(
@@ -569,7 +710,9 @@ function suggestIndex(
     .map((predicate) => predicate.fieldId)
     .sort();
   const combined = [...equality, ...ranges, ...(query.orderBy?.fieldIds ?? [])];
-  return [...new Set(combined)].slice(0, 3);
+  const suggestion = [...new Set(combined)];
+  if (suggestion.length === 0 || suggestion.length > 3) return null;
+  return suggestion;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
@@ -580,7 +723,13 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 }
 
 function encodeCursor(payload: CursorPayload): string {
-  return `crt1:${encodeURIComponent(JSON.stringify(payload))}`;
+  const encoded = `crt2:${encodeURIComponent(JSON.stringify(payload))}`;
+  invariant(
+    new TextEncoder().encode(encoded).byteLength <= MAX_CURSOR_BYTES,
+    "LIMIT_EXCEEDED",
+    `Cursor exceeds ${MAX_CURSOR_BYTES} bytes`,
+  );
+  return encoded;
 }
 
 function decodeCursor(
@@ -588,28 +737,45 @@ function decodeCursor(
   kind: "index",
   scopeId: string,
   resourceId: string,
-  hash: string,
+  plan: string,
+  schemaRev: number,
   direction: "asc" | "desc",
 ): IndexCursor;
+function decodeCursor(
+  encoded: string,
+  kind: "table",
+  scopeId: string,
+  resourceId: string,
+  plan: string,
+  schemaRev: number,
+  direction: "asc" | "desc",
+): TableCursor;
 function decodeCursor(
   encoded: string,
   kind: "scan",
   scopeId: string,
   resourceId: string,
-  hash: string,
+  plan: string,
+  schemaRev: number,
   direction: "asc" | "desc",
 ): ScanCursor;
 function decodeCursor(
   encoded: string,
-  kind: "index" | "scan",
+  kind: "index" | "table" | "scan",
   scopeId: string,
   resourceId: string,
-  hash: string,
+  plan: string,
+  schemaRev: number,
   direction: "asc" | "desc",
 ): CursorPayload {
   try {
     invariant(
-      encoded.startsWith("crt1:"),
+      new TextEncoder().encode(encoded).byteLength <= MAX_CURSOR_BYTES,
+      "INVALID_CURSOR",
+      `Cursor exceeds ${MAX_CURSOR_BYTES} bytes`,
+    );
+    invariant(
+      encoded.startsWith("crt2:"),
       "INVALID_CURSOR",
       "Unsupported cursor version",
     );
@@ -618,12 +784,14 @@ function decodeCursor(
     ) as CursorPayload;
     const matchesResource =
       (payload.kind === "index" && payload.indexId === resourceId) ||
+      (payload.kind === "table" && payload.tableId === resourceId) ||
       (payload.kind === "scan" && payload.tableId === resourceId);
     invariant(
-      payload.version === 1 &&
+      payload.version === 2 &&
         payload.kind === kind &&
         payload.scopeId === scopeId &&
-        payload.queryHash === hash &&
+        payload.plan === plan &&
+        payload.schemaRev === schemaRev &&
         payload.direction === direction &&
         matchesResource,
       "INVALID_CURSOR",
@@ -633,5 +801,45 @@ function decodeCursor(
   } catch (error) {
     if (error instanceof Error && error.name === "ConvexError") throw error;
     fail("INVALID_CURSOR", "Cursor is malformed");
+  }
+}
+
+function isDefaultTableQuery(query: QuerySpec): boolean {
+  return query.where.length === 0 && query.orderBy === undefined;
+}
+
+function canonicalPlan(value: Record<string, unknown>): string {
+  return canonicalStringify(value);
+}
+
+function validatePagination(pagination: Pagination): void {
+  validatePositiveInteger(pagination.pageSize, "pageSize", 100, 50);
+  validatePositiveInteger(
+    pagination.maximumRowsRead,
+    "maximumRowsRead",
+    MAX_ROWS_READ,
+    500,
+  );
+  validatePositiveInteger(
+    pagination.maximumBytesRead,
+    "maximumBytesRead",
+    MAX_BYTES_READ,
+    MAX_BYTES_READ,
+  );
+  if (pagination.cursor !== undefined) {
+    invariant(
+      new TextEncoder().encode(pagination.cursor).byteLength <=
+        MAX_CURSOR_BYTES,
+      "INVALID_CURSOR",
+      `Cursor exceeds ${MAX_CURSOR_BYTES} bytes`,
+    );
+  }
+  if (pagination.endCursor !== undefined) {
+    invariant(
+      new TextEncoder().encode(pagination.endCursor).byteLength <=
+        MAX_CURSOR_BYTES,
+      "INVALID_CURSOR",
+      `endCursor exceeds ${MAX_CURSOR_BYTES} bytes`,
+    );
   }
 }

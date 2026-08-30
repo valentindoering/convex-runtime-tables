@@ -20,13 +20,25 @@ export const fieldStateValidator = v.union(
 );
 export const indexStateValidator = v.union(
   v.literal("building"),
+  // Kept for alpha-schema migration. New code represents this with
+  // maintenanceState while preserving the serving state.
   v.literal("verifying"),
   v.literal("ready"),
   v.literal("failed"),
   v.literal("deleting"),
 );
+export const maintenanceStateValidator = v.union(
+  v.literal("idle"),
+  v.literal("backfilling"),
+  v.literal("repairing"),
+  v.literal("verifying"),
+  v.literal("deleting"),
+  v.literal("failed"),
+);
 export const jobKindValidator = v.union(
   v.literal("buildIndex"),
+  v.literal("repairIndex"),
+  v.literal("verifyIndex"),
   v.literal("deleteIndex"),
   v.literal("deleteTable"),
 );
@@ -35,9 +47,12 @@ export const jobStateValidator = v.union(
   v.literal("running"),
   v.literal("succeeded"),
   v.literal("failed"),
+  v.literal("superseded"),
 );
 export const jobPhaseValidator = v.union(
   v.literal("backfill"),
+  v.literal("repairRecords"),
+  v.literal("repairEntries"),
   v.literal("verifyRecords"),
   v.literal("verifyEntries"),
   v.literal("deleteEntries"),
@@ -53,10 +68,17 @@ export const selectOptionValidator = v.object({
 export const fieldConstraintsValidator = v.object({
   min: v.optional(v.number()),
   max: v.optional(v.number()),
-  maxLength: v.optional(v.number()),
+  maxBytes: v.optional(v.number()),
   selectOptions: v.optional(v.array(selectOptionValidator)),
   referenceTableId: v.optional(v.id("tables")),
 });
+export const storedFieldConstraintsValidator = fieldConstraintsValidator.extend(
+  {
+    // Read-only migration compatibility for 0.1.0-alpha.0 documents. New public
+    // inputs use fieldConstraintsValidator and cannot write this field.
+    maxLength: v.optional(v.number()),
+  },
+);
 export const fieldInputValidator = v.object({
   key: v.string(),
   name: v.string(),

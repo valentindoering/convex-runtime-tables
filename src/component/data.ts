@@ -2,7 +2,12 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { fail } from "./errors.js";
 import { normalizeIndexSlots, type Scalar } from "./normalization.js";
-import { ensureScope } from "./validation.js";
+import {
+  MAX_INDEXED_STRING_BYTES,
+  MAX_INDEX_ENTRY_BYTES,
+  ensureScope,
+  validateStoredDocumentSize,
+} from "./validation.js";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
@@ -72,15 +77,42 @@ export async function upsertIndexEntry(
   index: Doc<"indexDefinitions">,
   record: Doc<"records">,
   enforceUnique = true,
+  repairDuplicates = false,
 ): Promise<void> {
   const [k0, k1, k2] = normalizeIndexSlots(
     index.fieldIds,
     record.values as Record<string, Scalar>,
   );
+  for (const value of [k0, k1, k2]) {
+    if (
+      typeof value === "string" &&
+      new TextEncoder().encode(value).byteLength > MAX_INDEXED_STRING_BYTES
+    ) {
+      fail(
+        "LIMIT_EXCEEDED",
+        `Index ${index.name} contains a string longer than ${MAX_INDEXED_STRING_BYTES} bytes`,
+        { indexId: index._id, recordId: record._id },
+      );
+    }
+  }
+  validateStoredDocumentSize(
+    {
+      scopeId: index.scopeId,
+      indexId: index._id,
+      recordId: record._id,
+      k0,
+      k1,
+      k2,
+      recordRev: record.rev,
+    },
+    "Generated index entry",
+    MAX_INDEX_ENTRY_BYTES,
+  );
   if (
     enforceUnique &&
     index.unique &&
-    (index.state === "ready" || index.state === "verifying")
+    index.state === "ready" &&
+    ![k0, k1, k2].slice(0, index.fieldIds.length).includes(null)
   ) {
     const collisions = await ctx.db
       .query("indexEntries")
@@ -105,7 +137,7 @@ export async function upsertIndexEntry(
       );
     }
   }
-  const current = await ctx.db
+  const currentRows = await ctx.db
     .query("indexEntries")
     .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
       q
@@ -113,7 +145,19 @@ export async function upsertIndexEntry(
         .eq("indexId", index._id)
         .eq("recordId", record._id),
     )
-    .unique();
+    .take(2);
+  if (currentRows.length > 1) {
+    if (!repairDuplicates) {
+      fail("UNIQUE_CONFLICT", "Index contains duplicate sidecar entries", {
+        indexId: index._id,
+        recordId: record._id,
+      });
+    }
+    for (const duplicate of currentRows.slice(1)) {
+      await ctx.db.delete("indexEntries", duplicate._id);
+    }
+  }
+  const current = currentRows[0];
   if (!current) {
     await ctx.db.insert("indexEntries", {
       scopeId: index.scopeId,

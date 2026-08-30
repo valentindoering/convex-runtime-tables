@@ -6,7 +6,9 @@ export function normalizeNumber(value: number): number {
 }
 
 export function normalizeScalar(value: Scalar): Scalar {
-  return typeof value === "number" ? normalizeNumber(value) : value;
+  if (typeof value === "number") return normalizeNumber(value);
+  if (typeof value === "string") return value.normalize("NFC");
+  return value;
 }
 
 export function normalizeIndexSlots(
@@ -56,18 +58,6 @@ export function canonicalStringify(value: unknown): string {
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${canonicalStringify(item)}`)
     .join(",")}}`;
-}
-
-export function requestHash(value: unknown): string {
-  const input = canonicalStringify(value);
-  let a = 0x811c9dc5;
-  let b = 0x9e3779b9;
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    a = Math.imul(a ^ code, 0x01000193) >>> 0;
-    b = Math.imul(b ^ code, 0x85ebca6b) >>> 0;
-  }
-  return `${a.toString(16).padStart(8, "0")}${b.toString(16).padStart(8, "0")}`;
 }
 
 export async function secureRequestHash(value: unknown): Promise<string> {

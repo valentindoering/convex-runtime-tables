@@ -15,11 +15,12 @@ removes that guard.
 - Records keyed by stable field IDs, with optimistic `rev` checks.
 - Up to four runtime sidecar indexes per table and three fields per index.
 - Equality-prefix and next-field range queries, ascending or descending.
-- Bounded scans for tables with at most 200 records.
+- Structural index pagination for unfiltered tables of any supported size and
+  bounded scans for filtered tables with at most 200 records.
 - Opaque, query-bound cursors using the supported `convex-helpers` component
   paginator.
-- Online index backfill, verification, uniqueness checks, retry, and cleanup
-  jobs.
+- Generation-fenced online backfill, explicit repair, independent read-only
+  verification, uniqueness checks, retry, and cleanup jobs.
 - Atomic, idempotent insert batches and unique-index upserts.
 - A transport-neutral agent dispatcher and a local finance acceptance example.
 
@@ -73,6 +74,8 @@ npm run build:codegen
 npm run typecheck
 npm run lint
 npm test
+npm run test:coverage
+npm run test:consumer
 npm run build
 ```
 
@@ -91,7 +94,8 @@ Mutations:
 
 - `createTable`, `updateTable`, `addField`, `updateField`
 - `insertRecords`, `patchRecord`, `upsertRecords`, `deleteRecord`
-- `createIndex`, `verifyIndex`, `retryIndexBuild`, `deleteIndex`, `deleteTable`
+- `createIndex`, `repairIndex`, `verifyIndex`, `retryIndexBuild`, `deleteIndex`,
+  `deleteTable`
 
 See [query-contract.md](./docs/query-contract.md) for predicate and pagination
 rules and [host-integration.md](./docs/host-integration.md) for authorization

@@ -43,9 +43,10 @@ export const initializeDemo = mutation({
       components.runtimeTables.public.listTables,
       {
         scopeId: DEMO_SCOPE,
+        pagination: { pageSize: 100 },
       },
     );
-    const existing = tables.find((table) => table.slug === DEMO_SLUG);
+    const existing = tables.page.find((table) => table.slug === DEMO_SLUG);
     if (existing) return { tableId: existing._id, jobIds: [] };
 
     const created = await ctx.runMutation(
@@ -78,14 +79,14 @@ export const initializeDemo = mutation({
             name: "Currency",
             type: "text",
             required: true,
-            constraints: { maxLength: 3 },
+            constraints: { maxBytes: 3 },
           },
           {
             key: "merchant",
             name: "Merchant",
             type: "text",
             required: true,
-            constraints: { maxLength: 200 },
+            constraints: { maxBytes: 200 },
           },
           {
             key: "category",
@@ -106,7 +107,7 @@ export const initializeDemo = mutation({
             name: "Source reference",
             type: "text",
             required: true,
-            constraints: { maxLength: 100 },
+            constraints: { maxBytes: 100 },
           },
         ],
       },
@@ -151,9 +152,10 @@ export const getDemoSchema = query({
       components.runtimeTables.public.listTables,
       {
         scopeId: DEMO_SCOPE,
+        pagination: { pageSize: 100 },
       },
     );
-    const table = tables.find((candidate) => candidate.slug === DEMO_SLUG);
+    const table = tables.page.find((candidate) => candidate.slug === DEMO_SLUG);
     if (!table) return null;
     const schema = await ctx.runQuery(
       components.runtimeTables.public.getTable,

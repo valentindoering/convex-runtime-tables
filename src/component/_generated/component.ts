@@ -32,7 +32,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           field: {
             constraints?: {
               max?: number;
-              maxLength?: number;
+              maxBytes?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -56,7 +56,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           _id: string;
           constraints: {
             max?: number;
-            maxLength?: number;
+            maxBytes?: number;
             min?: number;
             referenceTableId?: string;
             selectOptions?: Array<{ code: string; label: string }>;
@@ -99,7 +99,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           fields: Array<{
             constraints?: {
               max?: number;
-              maxLength?: number;
+              maxBytes?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -125,7 +125,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             _id: string;
             constraints: {
               max?: number;
-              maxLength?: number;
+              maxBytes?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -149,6 +149,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           indexes: Array<{
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
             failure: null | {
               code: string;
@@ -156,17 +157,38 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               samples: Array<string>;
             };
             fieldIds: Array<string>;
+            generation?: number;
+            maintenanceState?:
+              | "idle"
+              | "backfilling"
+              | "repairing"
+              | "verifying"
+              | "deleting"
+              | "failed";
             name: string;
             scopeId: string;
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
             updatedAt: number;
+            verification?: {
+              checkedAt: number;
+              duplicate: number;
+              duplicateSamples: Array<string>;
+              missing: number;
+              missingSamples: Array<string>;
+              orphaned: number;
+              orphanedSamples: Array<string>;
+              stale: number;
+              staleSamples: Array<string>;
+            };
           }>;
           table: {
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
+            generation?: number;
             name: string;
             schemaRev: number;
             scopeId: string;
@@ -219,6 +241,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tableId: string;
         },
         | { indexId: string; kind: "index"; postFiltered: boolean }
+        | { kind: "table"; postFiltered: false }
         | { kind: "scan"; postFiltered: boolean }
         | { kind: "indexRequired"; suggestedIndex: Array<string> },
         Name
@@ -230,13 +253,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null | {
           _creationTime: number;
           _id: string;
-          attempts: number;
+          attempts?: number;
+          batchCount?: number;
+          completedAt?: number;
           createdAt: number;
           cursor: null | string;
-          kind: "buildIndex" | "deleteIndex" | "deleteTable";
+          generation?: number;
+          kind:
+            | "buildIndex"
+            | "repairIndex"
+            | "verifyIndex"
+            | "deleteIndex"
+            | "deleteTable";
           lastError: null | { code: string; message: string };
           phase:
             | "backfill"
+            | "repairRecords"
+            | "repairEntries"
             | "verifyRecords"
             | "verifyEntries"
             | "deleteEntries"
@@ -245,10 +278,22 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             | "deleteMetadata"
             | "done";
           progress: number;
+          retentionExpiresAt?: number;
+          retryCount?: number;
           scopeId: string;
-          state: "queued" | "running" | "succeeded" | "failed";
+          state: "queued" | "running" | "succeeded" | "failed" | "superseded";
           targetId: string;
           updatedAt: number;
+          verification?: {
+            duplicate: number;
+            duplicateSamples: Array<string>;
+            missing: number;
+            missingSamples: Array<string>;
+            orphaned: number;
+            orphanedSamples: Array<string>;
+            stale: number;
+            staleSamples: Array<string>;
+          };
         },
         Name
       >;
@@ -278,7 +323,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             _id: string;
             constraints: {
               max?: number;
-              maxLength?: number;
+              maxBytes?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -302,6 +347,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           indexes: Array<{
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
             failure: null | {
               code: string;
@@ -309,17 +355,38 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               samples: Array<string>;
             };
             fieldIds: Array<string>;
+            generation?: number;
+            maintenanceState?:
+              | "idle"
+              | "backfilling"
+              | "repairing"
+              | "verifying"
+              | "deleting"
+              | "failed";
             name: string;
             scopeId: string;
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
             updatedAt: number;
+            verification?: {
+              checkedAt: number;
+              duplicate: number;
+              duplicateSamples: Array<string>;
+              missing: number;
+              missingSamples: Array<string>;
+              orphaned: number;
+              orphanedSamples: Array<string>;
+              stale: number;
+              staleSamples: Array<string>;
+            };
           }>;
           table: {
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
+            generation?: number;
             name: string;
             schemaRev: number;
             scopeId: string;
@@ -347,18 +414,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listTables: FunctionReference<
         "query",
         "internal",
-        { scopeId: string },
-        Array<{
-          _creationTime: number;
-          _id: string;
-          createdAt: number;
-          name: string;
-          schemaRev: number;
+        {
+          pagination: {
+            cursor?: string;
+            endCursor?: string;
+            maximumBytesRead?: number;
+            maximumRowsRead?: number;
+            pageSize: number;
+          };
           scopeId: string;
-          slug: string;
-          state: "active" | "deleting";
-          updatedAt: number;
-        }>,
+        },
+        {
+          continueCursor: null | string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            activeJobId?: string;
+            createdAt: number;
+            generation?: number;
+            name: string;
+            schemaRev: number;
+            scopeId: string;
+            slug: string;
+            state: "active" | "deleting";
+            updatedAt: number;
+          }>;
+        },
         Name
       >;
       patchRecord: FunctionReference<
@@ -414,8 +496,16 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           }>;
           plan:
             | { indexId: string; kind: "index"; postFiltered: boolean }
+            | { kind: "table"; postFiltered: false }
             | { kind: "scan"; postFiltered: boolean };
         },
+        Name
+      >;
+      repairIndex: FunctionReference<
+        "mutation",
+        "internal",
+        { indexId: string; scopeId: string },
+        { jobId: string },
         Name
       >;
       retryIndexBuild: FunctionReference<
@@ -439,7 +529,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           _id: string;
           constraints: {
             max?: number;
-            maxLength?: number;
+            maxBytes?: number;
             min?: number;
             referenceTableId?: string;
             selectOptions?: Array<{ code: string; label: string }>;
@@ -477,7 +567,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             _id: string;
             constraints: {
               max?: number;
-              maxLength?: number;
+              maxBytes?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -501,6 +591,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           indexes: Array<{
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
             failure: null | {
               code: string;
@@ -508,17 +599,38 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               samples: Array<string>;
             };
             fieldIds: Array<string>;
+            generation?: number;
+            maintenanceState?:
+              | "idle"
+              | "backfilling"
+              | "repairing"
+              | "verifying"
+              | "deleting"
+              | "failed";
             name: string;
             scopeId: string;
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
             updatedAt: number;
+            verification?: {
+              checkedAt: number;
+              duplicate: number;
+              duplicateSamples: Array<string>;
+              missing: number;
+              missingSamples: Array<string>;
+              orphaned: number;
+              orphanedSamples: Array<string>;
+              stale: number;
+              staleSamples: Array<string>;
+            };
           }>;
           table: {
             _creationTime: number;
             _id: string;
+            activeJobId?: string;
             createdAt: number;
+            generation?: number;
             name: string;
             schemaRev: number;
             scopeId: string;

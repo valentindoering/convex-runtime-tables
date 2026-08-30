@@ -1,4 +1,5 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { getConvexSize } from "convex/values";
 import { fail, invariant } from "./errors.js";
 import { normalizeScalar, type Scalar } from "./normalization.js";
 
@@ -7,9 +8,15 @@ export const MAX_INDEXES = 4;
 export const MAX_INDEX_FIELDS = 3;
 export const MAX_BATCH_ITEMS = 100;
 export const MAX_RECORD_BYTES = 700_000;
+export const MAX_INDEXED_STRING_BYTES = 1_024;
+export const MAX_INDEX_ENTRY_BYTES = 32_000;
+export const MAX_CURSOR_BYTES = 8_192;
+export const MAX_ROWS_READ = 1_000;
+export const MAX_BYTES_READ = 4_000_000;
 export const MAX_BATCH_BYTES = 1_500_000;
 export const SCAN_LIMIT = 200;
-export const DEFAULT_IDEMPOTENCY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+export const DEFAULT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 type FieldInput = {
   key: string;
@@ -47,6 +54,20 @@ export function validateFieldInput(field: FieldInput): void {
     `Invalid display name for field ${field.key}`,
   );
   const constraints = field.constraints ?? {};
+  invariant(
+    constraints.min === undefined ||
+      field.type === "number" ||
+      field.type === "timestamp",
+    "VALIDATION_FAILED",
+    "min applies only to number and timestamp fields",
+  );
+  invariant(
+    constraints.max === undefined ||
+      field.type === "number" ||
+      field.type === "timestamp",
+    "VALIDATION_FAILED",
+    "max applies only to number and timestamp fields",
+  );
   if (constraints.min !== undefined) {
     invariant(
       Number.isFinite(constraints.min),
@@ -68,15 +89,32 @@ export function validateFieldInput(field: FieldInput): void {
       "min cannot be greater than max",
     );
   }
-  if (constraints.maxLength !== undefined) {
+  invariant(
+    constraints.maxBytes === undefined ||
+      field.type === "text" ||
+      field.type === "reference",
+    "VALIDATION_FAILED",
+    "maxBytes applies only to text and reference fields",
+  );
+  if (constraints.maxBytes !== undefined) {
     invariant(
-      Number.isInteger(constraints.maxLength) &&
-        constraints.maxLength >= 0 &&
-        constraints.maxLength <= 100_000,
+      Number.isInteger(constraints.maxBytes) &&
+        constraints.maxBytes >= 1 &&
+        constraints.maxBytes <= 100_000,
       "VALIDATION_FAILED",
-      "maxLength must be an integer between 0 and 100000",
+      "maxBytes must be an integer between 1 and 100000",
     );
   }
+  invariant(
+    constraints.selectOptions === undefined || field.type === "select",
+    "VALIDATION_FAILED",
+    "selectOptions applies only to select fields",
+  );
+  invariant(
+    constraints.referenceTableId === undefined || field.type === "reference",
+    "VALIDATION_FAILED",
+    "referenceTableId applies only to reference fields",
+  );
   if (field.type === "select") {
     const options = constraints.selectOptions ?? [];
     invariant(
@@ -92,12 +130,23 @@ export function validateFieldInput(field: FieldInput): void {
         `Invalid select option code: ${option.code}`,
       );
       invariant(
+        utf8Bytes(option.label.normalize("NFC")) >= 1 &&
+          utf8Bytes(option.label.normalize("NFC")) <= 256,
+        "VALIDATION_FAILED",
+        `Select option label must contain 1 to 256 bytes: ${option.code}`,
+      );
+      invariant(
         !codes.has(option.code),
         "VALIDATION_FAILED",
         `Duplicate select option: ${option.code}`,
       );
       codes.add(option.code);
     }
+    invariant(
+      getConvexSize(options) <= 64_000,
+      "LIMIT_EXCEEDED",
+      "Select option metadata exceeds 64 KB",
+    );
   }
 }
 
@@ -152,9 +201,7 @@ export function validateRecordValues(
     "LIMIT_EXCEEDED",
     `Records allow at most ${MAX_FIELDS} values`,
   );
-  const recordBytes = new TextEncoder().encode(
-    JSON.stringify(normalized),
-  ).byteLength;
+  const recordBytes = getConvexSize(normalized);
   invariant(
     recordBytes <= MAX_RECORD_BYTES,
     "LIMIT_EXCEEDED",
@@ -182,12 +229,11 @@ export function validateValue(field: Doc<"fields">, value: Scalar): void {
         "VALIDATION_FAILED",
         `Field ${field.key} requires a string`,
       );
-      if (field.constraints.maxLength !== undefined) {
+      if (field.constraints.maxBytes !== undefined) {
         invariant(
-          new TextEncoder().encode(value).byteLength <=
-            field.constraints.maxLength,
+          utf8Bytes(value) <= field.constraints.maxBytes,
           "VALIDATION_FAILED",
-          `Field ${field.key} exceeds maxLength`,
+          `Field ${field.key} exceeds maxBytes`,
         );
       }
       if (field.type === "select") {
@@ -230,6 +276,42 @@ export function validateValue(field: Doc<"fields">, value: Scalar): void {
       );
       break;
   }
+}
+
+export function validateStoredDocumentSize(
+  value: Record<string, unknown>,
+  label: string,
+  maximum = MAX_RECORD_BYTES,
+): void {
+  const bytes = getConvexSize(value as never);
+  invariant(bytes <= maximum, "LIMIT_EXCEEDED", `${label} exceeds size limit`, {
+    bytes,
+    maximum,
+  });
+}
+
+export function validatePositiveInteger(
+  value: number | undefined,
+  label: string,
+  maximum: number,
+  defaultValue: number,
+): number {
+  if (value === undefined) return defaultValue;
+  invariant(
+    Number.isFinite(value) && Number.isInteger(value) && value > 0,
+    "VALIDATION_FAILED",
+    `${label} must be a positive finite integer`,
+  );
+  invariant(
+    value <= maximum,
+    "LIMIT_EXCEEDED",
+    `${label} cannot exceed ${maximum}`,
+  );
+  return value;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function validateNumericBounds(field: Doc<"fields">, value: number): void {

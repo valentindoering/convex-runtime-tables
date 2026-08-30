@@ -31,8 +31,10 @@ does not make authorization decisions.
 
 Agents should receive host-authorized tools, never direct component credentials.
 The `./agent` export is a transport-neutral dispatcher for a host that already
-implements authorization and argument validation. It is not an MCP server and
-opens no network listener.
+implements authorization. It accepts only version 1 plain JSON objects, checks a
+closed operation set with own-property dispatch, rejects extra and malformed
+arguments, caps payloads at 64 KB, and exports a versioned JSON Schema. It is
+not an MCP server and opens no network listener.
 
 Recommended operations are list tables, inspect schema, explain or query
 records, write records, request an index, and inspect a job. A host should
@@ -43,5 +45,6 @@ agent may create a suggested index after `INDEX_REQUIRED`.
 
 Insert and upsert batches accept optional keys. Reuse with the same canonical
 request returns the stored result. Reuse with different content returns
-`IDEMPOTENCY_KEY_REUSED`. Keys expire after 14 days. Each stored key schedules a
-bounded scope cleanup worker; table deletion also removes its keys.
+`IDEMPOTENCY_MISMATCH`. Keys expire after seven days. Reads lazily remove an
+expired key. One hourly component sweep coalesces idempotency and terminal-job
+retention cleanup; writes do not create one scheduled function per key.

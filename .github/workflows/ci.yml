@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run format
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:race
+      - run: npm run test:coverage
+      - run: npm run build
+      - name: Packed clean-consumer, codegen, query, mutation, and reactivity
+        env:
+          npm_config_registry: https://registry.npmjs.org/
+        run: npm run test:consumer
+      - name: Confirm publishing stays disabled
+        run: |
+          node -e "const p=require('./package.json'); const names=['preversion','version','prepublishOnly','alpha','release']; if(p.private!==true || names.some((name)=>p.scripts[name]!=='node scripts/release-blocked.mjs')) process.exit(1)"
