@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const repository = new URL("../", import.meta.url).pathname;
+const JOB_TIMEOUT_MS = 150 * 60_000;
 const environment = {
   ...process.env,
   CONVEX_AGENT_MODE: "anonymous",
@@ -204,7 +205,8 @@ async function mutateDuringBuild(api, fixture, ids) {
 }
 
 async function waitForJob(api, jobId) {
-  const deadline = Date.now() + 60 * 60_000;
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  let nextProgressAt = Date.now() + 60_000;
   let lastJob = null;
   while (Date.now() < deadline) {
     const job = await client.query(api.scale.getJob, {
@@ -214,6 +216,12 @@ async function waitForJob(api, jobId) {
     lastJob = job;
     if (job && ["succeeded", "failed", "superseded"].includes(job.state))
       return job;
+    if (Date.now() >= nextProgressAt) {
+      process.stdout.write(
+        `SCALE_PROGRESS job=${jobId} state=${job?.state ?? "missing"} progress=${job?.progress ?? 0} batches=${job?.batchCount ?? 0} retries=${job?.retryCount ?? 0}\n`,
+      );
+      nextProgressAt = Date.now() + 60_000;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(
