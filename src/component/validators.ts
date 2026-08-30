@@ -1,6 +1,11 @@
 import { v } from "convex/values";
 
-export const scalarValidator = v.union(v.null(), v.boolean(), v.number(), v.string());
+export const scalarValidator = v.union(
+  v.null(),
+  v.boolean(),
+  v.number(),
+  v.string(),
+);
 export const fieldTypeValidator = v.union(
   v.literal("text"),
   v.literal("number"),
@@ -9,7 +14,10 @@ export const fieldTypeValidator = v.union(
   v.literal("select"),
   v.literal("reference"),
 );
-export const fieldStateValidator = v.union(v.literal("active"), v.literal("deleting"));
+export const fieldStateValidator = v.union(
+  v.literal("active"),
+  v.literal("deleting"),
+);
 export const indexStateValidator = v.union(
   v.literal("building"),
   v.literal("verifying"),
@@ -38,7 +46,10 @@ export const jobPhaseValidator = v.union(
   v.literal("deleteMetadata"),
   v.literal("done"),
 );
-export const selectOptionValidator = v.object({ code: v.string(), label: v.string() });
+export const selectOptionValidator = v.object({
+  code: v.string(),
+  label: v.string(),
+});
 export const fieldConstraintsValidator = v.object({
   min: v.optional(v.number()),
   max: v.optional(v.number()),

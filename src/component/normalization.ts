@@ -33,20 +33,25 @@ export function compareScalar(left: Scalar, right: Scalar): number {
   const rightRank = typeOrder(right);
   if (leftRank !== rightRank) return leftRank - rightRank;
   if (left === right) return 0;
-  if (typeof left === "number" && typeof right === "number") return left < right ? -1 : 1;
-  if (typeof left === "boolean" && typeof right === "boolean") return left ? 1 : -1;
-  if (typeof left === "string" && typeof right === "string") return left < right ? -1 : 1;
+  if (typeof left === "number" && typeof right === "number")
+    return left < right ? -1 : 1;
+  if (typeof left === "boolean" && typeof right === "boolean")
+    return left ? 1 : -1;
+  if (typeof left === "string" && typeof right === "string")
+    return left < right ? -1 : 1;
   return 0;
 }
 
 export function canonicalStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
-    if (typeof value === "number") return JSON.stringify(normalizeNumber(value));
+    if (typeof value === "number")
+      return JSON.stringify(normalizeNumber(value));
     return JSON.stringify(value);
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(",")}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
+  if (Array.isArray(value))
+    return `[${value.map(canonicalStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(
+    ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
   );
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${canonicalStringify(item)}`)

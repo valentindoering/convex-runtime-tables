@@ -23,7 +23,10 @@ export default function App() {
   const [category, setCategory] = useState("food");
 
   const fields = useMemo(
-    () => Object.fromEntries((schema?.fields ?? []).map((field) => [field.key, field.fieldId])),
+    () =>
+      Object.fromEntries(
+        (schema?.fields ?? []).map((field) => [field.key, field.fieldId]),
+      ),
     [schema],
   );
 
@@ -36,7 +39,8 @@ export default function App() {
     }
   }
 
-  if (schema === undefined) return <main className="shell">Loading local component…</main>;
+  if (schema === undefined)
+    return <main className="shell">Loading local component…</main>;
 
   if (schema === null) {
     return (
@@ -44,8 +48,9 @@ export default function App() {
         <p className="eyebrow">Convex component demo</p>
         <h1>Runtime tables, without build-time schemas</h1>
         <p>
-          Create the finance acceptance table, seven runtime fields, and three online indexes.
-          The component stays generic; this host supplies the finance vocabulary.
+          Create the finance acceptance table, seven runtime fields, and three
+          online indexes. The component stays generic; this host supplies the
+          finance vocabulary.
         </p>
         <button
           className="primary"
@@ -66,7 +71,8 @@ export default function App() {
           <p className="eyebrow">convex-runtime-tables</p>
           <h1>Transaction runtime table</h1>
           <p className="muted">
-            {schema.fields.length} fields · {rows.length} records · {records?.planKind ?? "loading"} plan
+            {schema.fields.length} fields · {rows.length} records ·{" "}
+            {records?.planKind ?? "loading"} plan
           </p>
         </div>
         <button
@@ -113,22 +119,38 @@ export default function App() {
       >
         <label>
           Merchant
-          <input value={merchant} onChange={(event) => setMerchant(event.target.value)} />
+          <input
+            value={merchant}
+            onChange={(event) => setMerchant(event.target.value)}
+          />
         </label>
         <label>
           Amount
-          <input type="number" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} />
+          <input
+            type="number"
+            step="0.01"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
         </label>
         <label>
           Category
-          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+          <select
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          >
             <option value="food">Food</option>
             <option value="travel">Travel</option>
             <option value="software">Software</option>
             <option value="other">Other</option>
           </select>
         </label>
-        <button className="primary" disabled={busy !== null || !merchant || !Number.isFinite(Number(amount))}>
+        <button
+          className="primary"
+          disabled={
+            busy !== null || !merchant || !Number.isFinite(Number(amount))
+          }
+        >
           {busy === "add" ? "Adding…" : "Add record"}
         </button>
       </form>
@@ -148,16 +170,32 @@ export default function App() {
           <tbody>
             {rows.map((record) => (
               <tr key={record._id}>
-                <td>{new Date(Number(record.values[fields.bookingDate!])).toLocaleDateString()}</td>
+                <td>
+                  {new Date(
+                    Number(record.values[fields.bookingDate!]),
+                  ).toLocaleDateString()}
+                </td>
                 <td>{String(record.values[fields.merchant!] ?? "")}</td>
-                <td><span className="category">{String(record.values[fields.category!] ?? "")}</span></td>
+                <td>
+                  <span className="category">
+                    {String(record.values[fields.category!] ?? "")}
+                  </span>
+                </td>
                 <td>{String(record.values[fields.accountId!] ?? "")}</td>
-                <td className="numeric">{money.format(Number(record.values[fields.amountMinor!]) / 100)}</td>
+                <td className="numeric">
+                  {money.format(
+                    Number(record.values[fields.amountMinor!]) / 100,
+                  )}
+                </td>
                 <td>r{record.rev}</td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={6} className="empty-row">Seed the table or add a record.</td></tr>
+              <tr>
+                <td colSpan={6} className="empty-row">
+                  Seed the table or add a record.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

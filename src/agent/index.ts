@@ -24,5 +24,6 @@ export type RuntimeTablesAgentHandlers = {
 export function createRuntimeTablesAgentDispatcher(
   handlers: RuntimeTablesAgentHandlers,
 ): (request: RuntimeTablesAgentRequest) => Promise<unknown> {
-  return async (request) => await handlers[request.operation](request.arguments);
+  return async (request) =>
+    await handlers[request.operation](request.arguments);
 }

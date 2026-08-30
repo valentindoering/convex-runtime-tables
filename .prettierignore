@@ -1,4 +1,7 @@
 .agents/skills/
 .claude/skills/
+.convex/
+dist/
 convex/_generated/
 example/convex/_generated/
+src/component/_generated/

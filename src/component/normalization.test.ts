@@ -12,7 +12,11 @@ import {
 describe("normalization", () => {
   test("missing and null collapse to the same index slot", () => {
     expect(normalizeIndexSlots(["field"], {})).toEqual([null, null, null]);
-    expect(normalizeIndexSlots(["field"], { field: null })).toEqual([null, null, null]);
+    expect(normalizeIndexSlots(["field"], { field: null })).toEqual([
+      null,
+      null,
+      null,
+    ]);
   });
 
   test("canonicalizes negative zero and rejects non-finite numbers", () => {

@@ -55,7 +55,11 @@ export default defineSchema({
     state: indexStateValidator,
     failure: v.union(
       v.null(),
-      v.object({ code: v.string(), message: v.string(), samples: v.array(v.string()) }),
+      v.object({
+        code: v.string(),
+        message: v.string(),
+        samples: v.array(v.string()),
+      }),
     ),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -80,8 +84,16 @@ export default defineSchema({
       "k2",
       "recordId",
     ])
-    .index("by_scopeId_and_indexId_and_recordId", ["scopeId", "indexId", "recordId"])
-    .index("by_scopeId_and_recordId_and_indexId", ["scopeId", "recordId", "indexId"]),
+    .index("by_scopeId_and_indexId_and_recordId", [
+      "scopeId",
+      "indexId",
+      "recordId",
+    ])
+    .index("by_scopeId_and_recordId_and_indexId", [
+      "scopeId",
+      "recordId",
+      "indexId",
+    ]),
 
   idempotencyKeys: defineTable({
     scopeId: v.string(),
@@ -89,7 +101,9 @@ export default defineSchema({
     operation: v.union(v.literal("insert"), v.literal("upsert")),
     key: v.string(),
     requestHash: v.string(),
-    resultSummary: v.array(v.object({ recordId: v.id("records"), rev: v.number() })),
+    resultSummary: v.array(
+      v.object({ recordId: v.id("records"), rev: v.number() }),
+    ),
     expiresAt: v.number(),
     createdAt: v.number(),
   })
@@ -110,7 +124,10 @@ export default defineSchema({
     cursor: v.union(v.null(), v.string()),
     progress: v.number(),
     attempts: v.number(),
-    lastError: v.union(v.null(), v.object({ code: v.string(), message: v.string() })),
+    lastError: v.union(
+      v.null(),
+      v.object({ code: v.string(), message: v.string() }),
+    ),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

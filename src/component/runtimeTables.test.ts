@@ -97,8 +97,13 @@ describe("runtime tables component", () => {
       unique: false,
     });
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-    const schema = await t.query(api.public.getTable, { scopeId, tableId: created.tableId });
-    expect(schema.indexes.find((index) => index._id === indexId)?.state).toBe("ready");
+    const schema = await t.query(api.public.getTable, {
+      scopeId,
+      tableId: created.tableId,
+    });
+    expect(schema.indexes.find((index) => index._id === indexId)?.state).toBe(
+      "ready",
+    );
 
     const seen: number[] = [];
     let cursor: string | undefined;
@@ -108,15 +113,30 @@ describe("runtime tables component", () => {
         tableId: created.tableId,
         query: {
           where: [
-            { fieldId: created.fieldIds.accountId!, op: "eq", value: "account-1" },
-            { fieldId: created.fieldIds.bookingDate!, op: "gte", value: 1_700_000_000_000 },
+            {
+              fieldId: created.fieldIds.accountId!,
+              op: "eq",
+              value: "account-1",
+            },
+            {
+              fieldId: created.fieldIds.bookingDate!,
+              op: "gte",
+              value: 1_700_000_000_000,
+            },
           ],
-          orderBy: { fieldIds: [created.fieldIds.bookingDate!], direction: "asc" },
+          orderBy: {
+            fieldIds: [created.fieldIds.bookingDate!],
+            direction: "asc",
+          },
         },
         pagination: { pageSize: 4, cursor },
       });
       expect(page.plan.kind).toBe("index");
-      seen.push(...page.page.map((record) => Number(record.values[created.fieldIds.bookingDate!]!)));
+      seen.push(
+        ...page.page.map((record) =>
+          Number(record.values[created.fieldIds.bookingDate!]!),
+        ),
+      );
       cursor = page.continueCursor ?? undefined;
     } while (cursor);
     expect(seen).toEqual([...seen].sort((left, right) => left - right));
@@ -161,7 +181,10 @@ describe("runtime tables component", () => {
     const t = initConvexTest();
     const created = await createTransactionsTable(t);
     await expect(
-      t.query(api.public.getTable, { scopeId: "scope-b", tableId: created.tableId }),
+      t.query(api.public.getTable, {
+        scopeId: "scope-b",
+        tableId: created.tableId,
+      }),
     ).rejects.toThrow(/SCOPE_MISMATCH|another scope/);
   });
 
@@ -177,7 +200,8 @@ describe("runtime tables component", () => {
         {
           values: {
             ...valuesFor(created.fieldIds, 2),
-            [created.fieldIds.sourceRef!]: duplicate[created.fieldIds.sourceRef!],
+            [created.fieldIds.sourceRef!]:
+              duplicate[created.fieldIds.sourceRef!],
           },
         },
       ],
@@ -190,7 +214,10 @@ describe("runtime tables component", () => {
       unique: true,
     });
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-    const schema = await t.query(api.public.getTable, { scopeId, tableId: created.tableId });
+    const schema = await t.query(api.public.getTable, {
+      scopeId,
+      tableId: created.tableId,
+    });
     const index = schema.indexes.find((candidate) => candidate._id === indexId);
     const job = await t.query(api.public.getJob, { scopeId, jobId });
     expect(index?.state).toBe("failed");
@@ -218,7 +245,11 @@ describe("runtime tables component", () => {
         tableId: created.tableId,
         query: {
           where: [
-            { fieldId: created.fieldIds.merchant!, op: "eq", value: "Merchant 1" },
+            {
+              fieldId: created.fieldIds.merchant!,
+              op: "eq",
+              value: "Merchant 1",
+            },
           ],
         },
         pagination: { pageSize: 10 },
@@ -228,41 +259,44 @@ describe("runtime tables component", () => {
       scopeId,
       tableId: created.tableId,
       query: {
-        where: [{ fieldId: created.fieldIds.merchant!, op: "eq", value: "Merchant 1" }],
+        where: [
+          {
+            fieldId: created.fieldIds.merchant!,
+            op: "eq",
+            value: "Merchant 1",
+          },
+        ],
       },
     });
     expect(plan.kind).toBe("indexRequired");
   });
 
-  test(
-    "imports 5,000 records twice with stable batch keys and stores 5,000",
-    async () => {
-      const t = initConvexTest();
-      const created = await createTransactionsTable(t);
-      for (let pass = 0; pass < 2; pass += 1) {
-        for (let batch = 0; batch < 50; batch += 1) {
-          await t.mutation(api.public.insertRecords, {
-            scopeId,
-            tableId: created.tableId,
-            records: Array.from({ length: 100 }, (_, offset) => ({
-              values: valuesFor(created.fieldIds, batch * 100 + offset),
-            })),
-            idempotencyKey: `finance-import-${batch}`,
-          });
-        }
+  test("imports 5,000 records twice with stable batch keys and stores 5,000", async () => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t);
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (let batch = 0; batch < 50; batch += 1) {
+        await t.mutation(api.public.insertRecords, {
+          scopeId,
+          tableId: created.tableId,
+          records: Array.from({ length: 100 }, (_, offset) => ({
+            values: valuesFor(created.fieldIds, batch * 100 + offset),
+          })),
+          idempotencyKey: `finance-import-${batch}`,
+        });
       }
-      const records = await t.run(async (ctx) =>
+    }
+    const records = await t.run(
+      async (ctx) =>
         await ctx.db
           .query("records")
           .withIndex("by_scopeId_and_tableId", (q) =>
             q.eq("scopeId", scopeId).eq("tableId", created.tableId),
           )
           .take(5_001),
-      );
-      expect(records).toHaveLength(5_000);
-    },
-    120_000,
-  );
+    );
+    expect(records).toHaveLength(5_000);
+  }, 120_000);
 });
 
 type TestInstance = ReturnType<typeof initConvexTest>;
@@ -277,7 +311,12 @@ async function createTransactionsTable(t: TestInstance): Promise<{
     name: "Transactions",
     fields: [
       { key: "accountId", name: "Account", type: "reference", required: true },
-      { key: "bookingDate", name: "Booking date", type: "timestamp", required: true },
+      {
+        key: "bookingDate",
+        name: "Booking date",
+        type: "timestamp",
+        required: true,
+      },
       { key: "amountMinor", name: "Amount", type: "number", required: true },
       { key: "currency", name: "Currency", type: "text", required: true },
       { key: "merchant", name: "Merchant", type: "text", required: true },
@@ -293,12 +332,19 @@ async function createTransactionsTable(t: TestInstance): Promise<{
           ],
         },
       },
-      { key: "sourceRef", name: "Source reference", type: "text", required: true },
+      {
+        key: "sourceRef",
+        name: "Source reference",
+        type: "text",
+        required: true,
+      },
     ],
   });
   return {
     tableId: created.table._id,
-    fieldIds: Object.fromEntries(created.fields.map((field) => [field.key, field._id])),
+    fieldIds: Object.fromEntries(
+      created.fields.map((field) => [field.key, field._id]),
+    ),
   };
 }
 

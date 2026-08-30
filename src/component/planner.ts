@@ -97,7 +97,9 @@ export async function explain(
   }
   const rows = await ctx.db
     .query("records")
-    .withIndex("by_scopeId_and_tableId", (q) => q.eq("scopeId", scopeId).eq("tableId", tableId))
+    .withIndex("by_scopeId_and_tableId", (q) =>
+      q.eq("scopeId", scopeId).eq("tableId", tableId),
+    )
     .take(SCAN_LIMIT + 1);
   if (rows.length <= SCAN_LIMIT) return { kind: "scan", postFiltered: false };
   return { kind: "indexRequired", suggestedIndex: suggestIndex(query, fields) };
@@ -116,7 +118,9 @@ export async function queryRecords(
   plan: Exclude<QueryPlan, { kind: "indexRequired" }>;
 }> {
   invariant(
-    Number.isInteger(pagination.pageSize) && pagination.pageSize >= 1 && pagination.pageSize <= 100,
+    Number.isInteger(pagination.pageSize) &&
+      pagination.pageSize >= 1 &&
+      pagination.pageSize <= 100,
     "VALIDATION_FAILED",
     "pageSize must be an integer between 1 and 100",
   );
@@ -124,7 +128,15 @@ export async function queryRecords(
   ensureActiveTable(table);
   const fields = await validateQuery(ctx, scopeId, tableId, query);
   const selected = await selectIndex(ctx, scopeId, tableId, query);
-  if (selected) return await indexedPage(ctx, scopeId, tableId, query, pagination, selected);
+  if (selected)
+    return await indexedPage(
+      ctx,
+      scopeId,
+      tableId,
+      query,
+      pagination,
+      selected,
+    );
   return await scannedPage(ctx, scopeId, tableId, query, pagination, fields);
 }
 
@@ -134,12 +146,22 @@ async function validateQuery(
   tableId: Id<"tables">,
   query: QuerySpec,
 ): Promise<Doc<"fields">[]> {
-  invariant(query.where.length <= 16, "LIMIT_EXCEEDED", "Queries allow at most 16 predicates");
-  const fields = (await loadFields(ctx, scopeId, tableId)).filter((field) => field.state === "active");
+  invariant(
+    query.where.length <= 16,
+    "LIMIT_EXCEEDED",
+    "Queries allow at most 16 predicates",
+  );
+  const fields = (await loadFields(ctx, scopeId, tableId)).filter(
+    (field) => field.state === "active",
+  );
   const byId = new Map(fields.map((field) => [field._id as string, field]));
   for (const predicate of query.where) {
     const field = byId.get(predicate.fieldId as string);
-    invariant(field, "VALIDATION_FAILED", `Unknown field: ${predicate.fieldId}`);
+    invariant(
+      field,
+      "VALIDATION_FAILED",
+      `Unknown field: ${predicate.fieldId}`,
+    );
     validateValue(field, normalizeScalar(predicate.value));
   }
   if (query.orderBy) {
@@ -150,8 +172,16 @@ async function validateQuery(
     );
     const seen = new Set<string>();
     for (const fieldId of query.orderBy.fieldIds) {
-      invariant(byId.has(fieldId as string), "VALIDATION_FAILED", `Unknown order field: ${fieldId}`);
-      invariant(!seen.has(fieldId), "VALIDATION_FAILED", "Order fields must be unique");
+      invariant(
+        byId.has(fieldId as string),
+        "VALIDATION_FAILED",
+        `Unknown order field: ${fieldId}`,
+      );
+      invariant(
+        !seen.has(fieldId),
+        "VALIDATION_FAILED",
+        "Order fields must be unique",
+      );
       seen.add(fieldId);
     }
   }
@@ -173,7 +203,8 @@ async function selectIndex(
   const equality = new Map<string, Scalar>();
   const rangeFields = new Set<string>();
   for (const predicate of query.where) {
-    if (predicate.op === "eq") equality.set(predicate.fieldId, normalizeScalar(predicate.value));
+    if (predicate.op === "eq")
+      equality.set(predicate.fieldId, normalizeScalar(predicate.value));
     else rangeFields.add(predicate.fieldId);
   }
   if (rangeFields.size > 1) return null;
@@ -186,7 +217,8 @@ async function selectIndex(
       equalityValues.push(equality.get(fieldId) ?? null);
     }
     const rangeField = [...rangeFields][0];
-    const nextField = index.fieldIds[equalityValues.length] as string | undefined;
+    const nextField = index.fieldIds[equalityValues.length] as
+      string | undefined;
     if (rangeField && nextField !== rangeField) continue;
     if (query.orderBy) {
       const remaining = index.fieldIds.slice(equalityValues.length);
@@ -196,18 +228,27 @@ async function selectIndex(
     }
     if (!query.orderBy && equalityValues.length === 0 && !rangeField) continue;
     const range = rangeField ? boundsFor(query.where, rangeField) : undefined;
-    const covered = new Set<string>(index.fieldIds.slice(0, equalityValues.length));
+    const covered = new Set<string>(
+      index.fieldIds.slice(0, equalityValues.length),
+    );
     if (rangeField) covered.add(rangeField);
-    const postFiltered = query.where.some((predicate) => !covered.has(predicate.fieldId));
+    const postFiltered = query.where.some(
+      (predicate) => !covered.has(predicate.fieldId),
+    );
     candidates.push({
       definition: index,
       equalityValues,
       range,
       postFiltered,
-      score: equalityValues.length * 10 + (range ? 5 : 0) - (postFiltered ? 1 : 0),
+      score:
+        equalityValues.length * 10 + (range ? 5 : 0) - (postFiltered ? 1 : 0),
     });
   }
-  candidates.sort((left, right) => right.score - left.score || left.definition.name.localeCompare(right.definition.name));
+  candidates.sort(
+    (left, right) =>
+      right.score - left.score ||
+      left.definition.name.localeCompare(right.definition.name),
+  );
   return candidates[0] ?? null;
 }
 
@@ -218,10 +259,18 @@ function boundsFor(predicates: Predicate[], fieldId: string): RangeBounds {
     const value = normalizeScalar(predicate.value);
     if (predicate.op === "gt" || predicate.op === "gte") {
       const candidate = { value, inclusive: predicate.op === "gte" };
-      if (!result.lower || compareScalar(candidate.value, result.lower.value) > 0) result.lower = candidate;
+      if (
+        !result.lower ||
+        compareScalar(candidate.value, result.lower.value) > 0
+      )
+        result.lower = candidate;
     } else {
       const candidate = { value, inclusive: predicate.op === "lte" };
-      if (!result.upper || compareScalar(candidate.value, result.upper.value) < 0) result.upper = candidate;
+      if (
+        !result.upper ||
+        compareScalar(candidate.value, result.upper.value) < 0
+      )
+        result.upper = candidate;
     }
   }
   return result;
@@ -238,10 +287,24 @@ async function indexedPage(
   const direction = query.orderBy?.direction ?? "asc";
   const hash = requestHash(query);
   const cursor = pagination.cursor
-    ? decodeCursor(pagination.cursor, "index", scopeId, selected.definition._id, hash, direction)
+    ? decodeCursor(
+        pagination.cursor,
+        "index",
+        scopeId,
+        selected.definition._id,
+        hash,
+        direction,
+      )
     : null;
   const endCursor = pagination.endCursor
-    ? decodeCursor(pagination.endCursor, "index", scopeId, selected.definition._id, hash, direction)
+    ? decodeCursor(
+        pagination.endCursor,
+        "index",
+        scopeId,
+        selected.definition._id,
+        hash,
+        direction,
+      )
     : null;
   const stream = buildEntryQuery(ctx, selected).order(direction);
   const result = await stream.paginate({
@@ -249,9 +312,14 @@ async function indexedPage(
     cursor: cursor?.inner ?? null,
     ...(endCursor ? { endCursor: endCursor.inner } : {}),
     maximumRowsRead: Math.min(pagination.maximumRowsRead ?? 500, 1_000),
-    maximumBytesRead: Math.min(pagination.maximumBytesRead ?? 4_000_000, 4_000_000),
+    maximumBytesRead: Math.min(
+      pagination.maximumBytesRead ?? 4_000_000,
+      4_000_000,
+    ),
   });
-  const hydrated = await Promise.all(result.page.map((entry) => ctx.db.get("records", entry.recordId)));
+  const hydrated = await Promise.all(
+    result.page.map((entry) => ctx.db.get("records", entry.recordId)),
+  );
   const page = hydrated.filter(
     (record): record is Doc<"records"> =>
       record !== null &&
@@ -283,19 +351,27 @@ async function indexedPage(
 
 function buildEntryQuery(ctx: QueryCtx, selected: SelectedIndex) {
   const start = paginator(ctx.db, schema).query("indexEntries");
-  const indexName = "by_scopeId_and_indexId_and_k0_and_k1_and_k2_and_recordId" as const;
+  const indexName =
+    "by_scopeId_and_indexId_and_k0_and_k1_and_k2_and_recordId" as const;
   const scopeId = selected.definition.scopeId;
   const indexId = selected.definition._id;
   const eq = selected.equalityValues;
   if (eq.length === 0) {
     return start.withIndex(indexName, (q) =>
-      addBounds(q.eq("scopeId", scopeId).eq("indexId", indexId), "k0", selected.range),
+      addBounds(
+        q.eq("scopeId", scopeId).eq("indexId", indexId),
+        "k0",
+        selected.range,
+      ),
     );
   }
   if (eq.length === 1) {
     return start.withIndex(indexName, (q) =>
       addBounds(
-        q.eq("scopeId", scopeId).eq("indexId", indexId).eq("k0", eq[0] ?? null),
+        q
+          .eq("scopeId", scopeId)
+          .eq("indexId", indexId)
+          .eq("k0", eq[0] ?? null),
         "k1",
         selected.range,
       ),
@@ -364,7 +440,9 @@ async function scannedPage(
 ) {
   const records = await ctx.db
     .query("records")
-    .withIndex("by_scopeId_and_tableId", (q) => q.eq("scopeId", scopeId).eq("tableId", tableId))
+    .withIndex("by_scopeId_and_tableId", (q) =>
+      q.eq("scopeId", scopeId).eq("tableId", tableId),
+    )
     .take(SCAN_LIMIT + 1);
   if (records.length > SCAN_LIMIT) {
     const suggestedIndex = suggestIndex(query, fields);
@@ -379,11 +457,19 @@ async function scannedPage(
     ? decodeCursor(pagination.cursor, "scan", scopeId, tableId, hash, direction)
     : null;
   const filtered = records.filter((record) => matchesAll(record, query.where));
-  filtered.sort((left, right) => compareRecords(left, right, orderFields, direction));
+  filtered.sort((left, right) =>
+    compareRecords(left, right, orderFields, direction),
+  );
   const afterCursor = cursor
     ? filtered.filter(
         (record) =>
-          compareBoundary(record, orderFields, cursor.boundaryValues, cursor.recordId, direction) > 0,
+          compareBoundary(
+            record,
+            orderFields,
+            cursor.boundaryValues,
+            cursor.recordId,
+            direction,
+          ) > 0,
       )
     : filtered;
   const page = afterCursor.slice(0, pagination.pageSize);
@@ -402,7 +488,9 @@ async function scannedPage(
             tableId,
             queryHash: hash,
             direction,
-            boundaryValues: orderFields.map((fieldId) => last.values[fieldId] ?? null),
+            boundaryValues: orderFields.map(
+              (fieldId) => last.values[fieldId] ?? null,
+            ),
             recordId: last._id,
           }),
     plan: { kind: "scan" as const, postFiltered: false },
@@ -463,14 +551,21 @@ function compareBoundary(
   return record._id < recordId ? -factor : record._id > recordId ? factor : 0;
 }
 
-function suggestIndex(query: QuerySpec, fields: Doc<"fields">[]): Id<"fields">[] {
+function suggestIndex(
+  query: QuerySpec,
+  fields: Doc<"fields">[],
+): Id<"fields">[] {
   const valid = new Set(fields.map((field) => field._id));
   const equality = query.where
-    .filter((predicate) => predicate.op === "eq" && valid.has(predicate.fieldId))
+    .filter(
+      (predicate) => predicate.op === "eq" && valid.has(predicate.fieldId),
+    )
     .map((predicate) => predicate.fieldId)
     .sort();
   const ranges = query.where
-    .filter((predicate) => predicate.op !== "eq" && valid.has(predicate.fieldId))
+    .filter(
+      (predicate) => predicate.op !== "eq" && valid.has(predicate.fieldId),
+    )
     .map((predicate) => predicate.fieldId)
     .sort();
   const combined = [...equality, ...ranges, ...(query.orderBy?.fieldIds ?? [])];
@@ -478,7 +573,10 @@ function suggestIndex(query: QuerySpec, fields: Doc<"fields">[]): Id<"fields">[]
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function encodeCursor(payload: CursorPayload): string {
@@ -510,8 +608,14 @@ function decodeCursor(
   direction: "asc" | "desc",
 ): CursorPayload {
   try {
-    invariant(encoded.startsWith("crt1:"), "INVALID_CURSOR", "Unsupported cursor version");
-    const payload = JSON.parse(decodeURIComponent(encoded.slice(5))) as CursorPayload;
+    invariant(
+      encoded.startsWith("crt1:"),
+      "INVALID_CURSOR",
+      "Unsupported cursor version",
+    );
+    const payload = JSON.parse(
+      decodeURIComponent(encoded.slice(5)),
+    ) as CursorPayload;
     const matchesResource =
       (payload.kind === "index" && payload.indexId === resourceId) ||
       (payload.kind === "scan" && payload.tableId === resourceId);

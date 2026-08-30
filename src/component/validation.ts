@@ -48,13 +48,25 @@ export function validateFieldInput(field: FieldInput): void {
   );
   const constraints = field.constraints ?? {};
   if (constraints.min !== undefined) {
-    invariant(Number.isFinite(constraints.min), "VALIDATION_FAILED", "min must be finite");
+    invariant(
+      Number.isFinite(constraints.min),
+      "VALIDATION_FAILED",
+      "min must be finite",
+    );
   }
   if (constraints.max !== undefined) {
-    invariant(Number.isFinite(constraints.max), "VALIDATION_FAILED", "max must be finite");
+    invariant(
+      Number.isFinite(constraints.max),
+      "VALIDATION_FAILED",
+      "max must be finite",
+    );
   }
   if (constraints.min !== undefined && constraints.max !== undefined) {
-    invariant(constraints.min <= constraints.max, "VALIDATION_FAILED", "min cannot be greater than max");
+    invariant(
+      constraints.min <= constraints.max,
+      "VALIDATION_FAILED",
+      "min cannot be greater than max",
+    );
   }
   if (constraints.maxLength !== undefined) {
     invariant(
@@ -67,7 +79,11 @@ export function validateFieldInput(field: FieldInput): void {
   }
   if (field.type === "select") {
     const options = constraints.selectOptions ?? [];
-    invariant(options.length <= 200, "LIMIT_EXCEEDED", "Select fields allow at most 200 options");
+    invariant(
+      options.length <= 200,
+      "LIMIT_EXCEEDED",
+      "Select fields allow at most 200 options",
+    );
     const codes = new Set<string>();
     for (const option of options) {
       invariant(
@@ -75,18 +91,30 @@ export function validateFieldInput(field: FieldInput): void {
         "VALIDATION_FAILED",
         `Invalid select option code: ${option.code}`,
       );
-      invariant(!codes.has(option.code), "VALIDATION_FAILED", `Duplicate select option: ${option.code}`);
+      invariant(
+        !codes.has(option.code),
+        "VALIDATION_FAILED",
+        `Duplicate select option: ${option.code}`,
+      );
       codes.add(option.code);
     }
   }
 }
 
 export function validateFields(fields: readonly FieldInput[]): void {
-  invariant(fields.length <= MAX_FIELDS, "LIMIT_EXCEEDED", `Tables allow at most ${MAX_FIELDS} fields`);
+  invariant(
+    fields.length <= MAX_FIELDS,
+    "LIMIT_EXCEEDED",
+    `Tables allow at most ${MAX_FIELDS} fields`,
+  );
   const keys = new Set<string>();
   for (const field of fields) {
     validateFieldInput(field);
-    invariant(!keys.has(field.key), "VALIDATION_FAILED", `Duplicate field key: ${field.key}`);
+    invariant(
+      !keys.has(field.key),
+      "VALIDATION_FAILED",
+      `Duplicate field key: ${field.key}`,
+    );
     keys.add(field.key);
   }
 }
@@ -95,11 +123,17 @@ export function validateRecordValues(
   fields: readonly Doc<"fields">[],
   input: Readonly<Record<string, Scalar>>,
 ): Record<string, Scalar> {
-  const fieldById = new Map(fields.map((field) => [field._id as string, field]));
+  const fieldById = new Map(
+    fields.map((field) => [field._id as string, field]),
+  );
   const normalized: Record<string, Scalar> = {};
   for (const [fieldId, rawValue] of Object.entries(input)) {
     const field = fieldById.get(fieldId);
-    invariant(field && field.state === "active", "VALIDATION_FAILED", `Unknown or deleted field: ${fieldId}`);
+    invariant(
+      field && field.state === "active",
+      "VALIDATION_FAILED",
+      `Unknown or deleted field: ${fieldId}`,
+    );
     const value = normalizeScalar(rawValue);
     validateValue(field, value);
     normalized[fieldId] = value;
@@ -118,7 +152,9 @@ export function validateRecordValues(
     "LIMIT_EXCEEDED",
     `Records allow at most ${MAX_FIELDS} values`,
   );
-  const recordBytes = new TextEncoder().encode(JSON.stringify(normalized)).byteLength;
+  const recordBytes = new TextEncoder().encode(
+    JSON.stringify(normalized),
+  ).byteLength;
   invariant(
     recordBytes <= MAX_RECORD_BYTES,
     "LIMIT_EXCEEDED",
@@ -130,28 +166,47 @@ export function validateRecordValues(
 
 export function validateValue(field: Doc<"fields">, value: Scalar): void {
   if (value === null) {
-    invariant(!field.required, "VALIDATION_FAILED", `Field ${field.key} cannot be null`);
+    invariant(
+      !field.required,
+      "VALIDATION_FAILED",
+      `Field ${field.key} cannot be null`,
+    );
     return;
   }
   switch (field.type) {
     case "text":
     case "select":
     case "reference":
-      invariant(typeof value === "string", "VALIDATION_FAILED", `Field ${field.key} requires a string`);
+      invariant(
+        typeof value === "string",
+        "VALIDATION_FAILED",
+        `Field ${field.key} requires a string`,
+      );
       if (field.constraints.maxLength !== undefined) {
         invariant(
-          new TextEncoder().encode(value).byteLength <= field.constraints.maxLength,
+          new TextEncoder().encode(value).byteLength <=
+            field.constraints.maxLength,
           "VALIDATION_FAILED",
           `Field ${field.key} exceeds maxLength`,
         );
       }
       if (field.type === "select") {
-        const allowed = new Set((field.constraints.selectOptions ?? []).map((option) => option.code));
-        invariant(allowed.has(value), "VALIDATION_FAILED", `Unknown option for field ${field.key}`);
+        const allowed = new Set(
+          (field.constraints.selectOptions ?? []).map((option) => option.code),
+        );
+        invariant(
+          allowed.has(value),
+          "VALIDATION_FAILED",
+          `Unknown option for field ${field.key}`,
+        );
       }
       break;
     case "number":
-      invariant(typeof value === "number", "VALIDATION_FAILED", `Field ${field.key} requires a number`);
+      invariant(
+        typeof value === "number",
+        "VALIDATION_FAILED",
+        `Field ${field.key} requires a number`,
+      );
       validateNumericBounds(field, value);
       break;
     case "timestamp":
@@ -168,18 +223,34 @@ export function validateValue(field: Doc<"fields">, value: Scalar): void {
       validateNumericBounds(field, value);
       break;
     case "boolean":
-      invariant(typeof value === "boolean", "VALIDATION_FAILED", `Field ${field.key} requires a boolean`);
+      invariant(
+        typeof value === "boolean",
+        "VALIDATION_FAILED",
+        `Field ${field.key} requires a boolean`,
+      );
       break;
   }
 }
 
 function validateNumericBounds(field: Doc<"fields">, value: number): void {
-  invariant(Number.isFinite(value), "VALIDATION_FAILED", `Field ${field.key} requires a finite number`);
+  invariant(
+    Number.isFinite(value),
+    "VALIDATION_FAILED",
+    `Field ${field.key} requires a finite number`,
+  );
   if (field.constraints.min !== undefined) {
-    invariant(value >= field.constraints.min, "VALIDATION_FAILED", `Field ${field.key} is below min`);
+    invariant(
+      value >= field.constraints.min,
+      "VALIDATION_FAILED",
+      `Field ${field.key} is below min`,
+    );
   }
   if (field.constraints.max !== undefined) {
-    invariant(value <= field.constraints.max, "VALIDATION_FAILED", `Field ${field.key} is above max`);
+    invariant(
+      value <= field.constraints.max,
+      "VALIDATION_FAILED",
+      `Field ${field.key} is above max`,
+    );
   }
 }
 
@@ -189,12 +260,14 @@ export function ensureScope<T extends { scopeId: string }>(
   resource: string,
 ): T {
   if (!value) fail("NOT_FOUND", `${resource} was not found`);
-  if (value.scopeId !== scopeId) fail("SCOPE_MISMATCH", `${resource} belongs to another scope`);
+  if (value.scopeId !== scopeId)
+    fail("SCOPE_MISMATCH", `${resource} belongs to another scope`);
   return value;
 }
 
 export function ensureActiveTable(table: Doc<"tables">): void {
-  if (table.state === "deleting") fail("TABLE_DELETING", "Table is being deleted");
+  if (table.state === "deleting")
+    fail("TABLE_DELETING", "Table is being deleted");
 }
 
 export function ensureFieldIds(
@@ -206,10 +279,22 @@ export function ensureFieldIds(
     "VALIDATION_FAILED",
     `Indexes require 1 to ${MAX_INDEX_FIELDS} fields`,
   );
-  const available = new Set(fields.filter((field) => field.state === "active").map((field) => field._id));
+  const available = new Set(
+    fields
+      .filter((field) => field.state === "active")
+      .map((field) => field._id),
+  );
   const unique = new Set(fieldIds);
-  invariant(unique.size === fieldIds.length, "VALIDATION_FAILED", "Index fields must be unique");
+  invariant(
+    unique.size === fieldIds.length,
+    "VALIDATION_FAILED",
+    "Index fields must be unique",
+  );
   for (const fieldId of fieldIds) {
-    invariant(available.has(fieldId), "VALIDATION_FAILED", `Unknown or deleted field: ${fieldId}`);
+    invariant(
+      available.has(fieldId),
+      "VALIDATION_FAILED",
+      `Unknown or deleted field: ${fieldId}`,
+    );
   }
 }

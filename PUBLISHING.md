@@ -1,8 +1,9 @@
 # Publishing
 
-This repository is deliberately unpublished. `package.json` contains `private: true`, and the
-GitHub workflow does not run `npm publish` or `pkg-pr-new`. Do not remove that guard until the
-alpha gates, package ownership, and release decision are complete.
+This repository is deliberately unpublished. `package.json` contains
+`private: true`, and the GitHub workflow does not run `npm publish` or
+`pkg-pr-new`. Do not remove that guard until the alpha gates, package ownership,
+and release decision are complete.
 
 In order for other people to install and use this component, you can publish the
 package to npm.
@@ -17,7 +18,8 @@ If this is your first time, here are the recommended steps:
    latter, ensure you have an npmjs account with permissions to push to
    `my-org`.
 2. `npm login` to login to npmjs.
-3. Remove generated `dist` output and run `npm run build:codegen` against a development deployment.
+3. Remove generated `dist` output and run `npm run build:codegen` against a
+   development deployment.
 4. `npm ci` to install the dependencies with the versions specified in
    `package-lock.json`.
 5. `npm run build` to build the package fresh.
@@ -34,7 +36,8 @@ If this is your first time, here are the recommended steps:
     contributors can always see what code was published with each version.
     Running `npm version ...` will create these tags and commits automatically.
 
-After the initial publish, release automation can replace the guarded template scripts below.
+After the initial publish, release automation can replace the guarded template
+scripts below.
 
 ## Package scripts for releasing
 

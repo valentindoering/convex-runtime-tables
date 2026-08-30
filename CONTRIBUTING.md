@@ -23,4 +23,5 @@ Add a Changeset for user-visible package changes:
 npm run changeset
 ```
 
-Do not remove `private: true` or publish an npm package without an explicit release decision.
+Do not remove `private: true` or publish an npm package without an explicit
+release decision.

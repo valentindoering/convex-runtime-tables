@@ -14,11 +14,18 @@ export const processIndexJob = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const job = await ctx.db.get("jobs", args.jobId);
-    if (!job || job.kind !== "buildIndex" || job.state === "succeeded" || job.state === "failed") {
+    if (
+      !job ||
+      job.kind !== "buildIndex" ||
+      job.state === "succeeded" ||
+      job.state === "failed"
+    ) {
       return null;
     }
     const indexId = ctx.db.normalizeId("indexDefinitions", job.targetId);
-    const index = indexId ? await ctx.db.get("indexDefinitions", indexId) : null;
+    const index = indexId
+      ? await ctx.db.get("indexDefinitions", indexId)
+      : null;
     if (!index || index.scopeId !== job.scopeId) {
       await failJob(ctx, job, "NOT_FOUND", "Index definition no longer exists");
       return null;
@@ -49,7 +56,8 @@ export const processDeleteIndexJob = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const job = await ctx.db.get("jobs", args.jobId);
-    if (!job || job.kind !== "deleteIndex" || job.state === "succeeded") return null;
+    if (!job || job.kind !== "deleteIndex" || job.state === "succeeded")
+      return null;
     const indexId = ctx.db.normalizeId("indexDefinitions", job.targetId);
     if (!indexId) {
       await succeedJob(ctx, job);
@@ -61,10 +69,15 @@ export const processDeleteIndexJob = internalMutation({
         q.eq("scopeId", job.scopeId).eq("indexId", indexId),
       )
       .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
-    for (const entry of result.page) await ctx.db.delete("indexEntries", entry._id);
+    for (const entry of result.page)
+      await ctx.db.delete("indexEntries", entry._id);
     if (!result.isDone) {
       await continueJob(ctx, job, result.continueCursor, result.page.length);
-      await ctx.scheduler.runAfter(0, internal.indexJobs.processDeleteIndexJob, { jobId: job._id });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.indexJobs.processDeleteIndexJob,
+        { jobId: job._id },
+      );
       return null;
     }
     const definition = await ctx.db.get("indexDefinitions", indexId);
@@ -81,7 +94,8 @@ export const processDeleteTableJob = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const job = await ctx.db.get("jobs", args.jobId);
-    if (!job || job.kind !== "deleteTable" || job.state === "succeeded") return null;
+    if (!job || job.kind !== "deleteTable" || job.state === "succeeded")
+      return null;
     const tableId = ctx.db.normalizeId("tables", job.targetId);
     if (!tableId) {
       await succeedJob(ctx, job);
@@ -112,13 +126,19 @@ export const processDeleteTableJob = internalMutation({
     const activeFields = await ctx.db
       .query("fields")
       .withIndex("by_scopeId_and_tableId_and_state", (q) =>
-        q.eq("scopeId", job.scopeId).eq("tableId", tableId).eq("state", "active"),
+        q
+          .eq("scopeId", job.scopeId)
+          .eq("tableId", tableId)
+          .eq("state", "active"),
       )
       .take(BATCH_SIZE);
     const deletingFields = await ctx.db
       .query("fields")
       .withIndex("by_scopeId_and_tableId_and_state", (q) =>
-        q.eq("scopeId", job.scopeId).eq("tableId", tableId).eq("state", "deleting"),
+        q
+          .eq("scopeId", job.scopeId)
+          .eq("tableId", tableId)
+          .eq("state", "deleting"),
       )
       .take(BATCH_SIZE);
     const fields = [...activeFields, ...deletingFields].slice(0, BATCH_SIZE);
@@ -136,7 +156,10 @@ export const processDeleteTableJob = internalMutation({
       const keys = await ctx.db
         .query("idempotencyKeys")
         .withIndex("by_scopeId_and_tableId_and_operation_and_key", (q) =>
-          q.eq("scopeId", job.scopeId).eq("tableId", tableId).eq("operation", operation),
+          q
+            .eq("scopeId", job.scopeId)
+            .eq("tableId", tableId)
+            .eq("operation", operation),
         )
         .take(BATCH_SIZE);
       if (keys.length > 0) {
@@ -146,7 +169,8 @@ export const processDeleteTableJob = internalMutation({
       }
     }
     const table = await ctx.db.get("tables", tableId);
-    if (table && table.scopeId === job.scopeId) await ctx.db.delete("tables", tableId);
+    if (table && table.scopeId === job.scopeId)
+      await ctx.db.delete("tables", tableId);
     await succeedJob(ctx, job);
     return null;
   },
@@ -163,10 +187,13 @@ async function backfill(
       q.eq("scopeId", job.scopeId).eq("tableId", index.tableId),
     )
     .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
-  for (const record of result.page) await upsertIndexEntry(ctx, index, record, false);
+  for (const record of result.page)
+    await upsertIndexEntry(ctx, index, record, false);
   if (!result.isDone) {
     await continueJob(ctx, job, result.continueCursor, result.page.length);
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, { jobId: job._id });
+    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
+      jobId: job._id,
+    });
     return;
   }
   await ctx.db.patch("indexDefinitions", index._id, {
@@ -180,7 +207,9 @@ async function backfill(
     progress: job.progress + result.page.length,
     updatedAt: Date.now(),
   });
-  await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, { jobId: job._id });
+  await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
+    jobId: job._id,
+  });
 }
 
 async function verifyRecords(
@@ -198,7 +227,10 @@ async function verifyRecords(
   for (const record of result.page) {
     await upsertIndexEntry(ctx, index, record, false);
     if (index.unique) {
-      const [k0, k1, k2] = normalizeIndexSlots(index.fieldIds, record.values as Record<string, Scalar>);
+      const [k0, k1, k2] = normalizeIndexSlots(
+        index.fieldIds,
+        record.values as Record<string, Scalar>,
+      );
       const duplicates = await ctx.db
         .query("indexEntries")
         .withIndex(
@@ -212,7 +244,8 @@ async function verifyRecords(
               .eq("k2", k2),
         )
         .take(3);
-      if (duplicates.length > 1) conflicts.push(...duplicates.map((entry) => entry.recordId));
+      if (duplicates.length > 1)
+        conflicts.push(...duplicates.map((entry) => entry.recordId));
     }
   }
   if (conflicts.length > 0) {
@@ -225,12 +258,19 @@ async function verifyRecords(
       },
       updatedAt: Date.now(),
     });
-    await failJob(ctx, job, "UNIQUE_CONFLICT", "Historical records contain duplicate keys");
+    await failJob(
+      ctx,
+      job,
+      "UNIQUE_CONFLICT",
+      "Historical records contain duplicate keys",
+    );
     return;
   }
   if (!result.isDone) {
     await continueJob(ctx, job, result.continueCursor, result.page.length);
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, { jobId: job._id });
+    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
+      jobId: job._id,
+    });
     return;
   }
   await ctx.db.patch("jobs", job._id, {
@@ -239,7 +279,9 @@ async function verifyRecords(
     progress: job.progress + result.page.length,
     updatedAt: Date.now(),
   });
-  await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, { jobId: job._id });
+  await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
+    jobId: job._id,
+  });
 }
 
 async function verifyEntries(
@@ -255,23 +297,37 @@ async function verifyEntries(
     .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
   for (const entry of result.page) {
     const record = await ctx.db.get("records", entry.recordId);
-    if (!record || record.scopeId !== job.scopeId || record.tableId !== index.tableId) {
+    if (
+      !record ||
+      record.scopeId !== job.scopeId ||
+      record.tableId !== index.tableId
+    ) {
       await ctx.db.delete("indexEntries", entry._id);
       continue;
     }
-    const [k0, k1, k2] = normalizeIndexSlots(index.fieldIds, record.values as Record<string, Scalar>);
+    const [k0, k1, k2] = normalizeIndexSlots(
+      index.fieldIds,
+      record.values as Record<string, Scalar>,
+    );
     if (
       !Object.is(entry.k0, k0) ||
       !Object.is(entry.k1, k1) ||
       !Object.is(entry.k2, k2) ||
       entry.recordRev !== record.rev
     ) {
-      await ctx.db.patch("indexEntries", entry._id, { k0, k1, k2, recordRev: record.rev });
+      await ctx.db.patch("indexEntries", entry._id, {
+        k0,
+        k1,
+        k2,
+        recordRev: record.rev,
+      });
     }
   }
   if (!result.isDone) {
     await continueJob(ctx, job, result.continueCursor, result.page.length);
-    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, { jobId: job._id });
+    await ctx.scheduler.runAfter(0, internal.indexJobs.processIndexJob, {
+      jobId: job._id,
+    });
     return;
   }
   await ctx.db.patch("indexDefinitions", index._id, {
@@ -287,7 +343,13 @@ async function deleteOneIndexBatch(
   job: Doc<"jobs">,
   tableId: Id<"tables">,
 ): Promise<boolean> {
-  for (const state of ["building", "verifying", "ready", "failed", "deleting"] as const) {
+  for (const state of [
+    "building",
+    "verifying",
+    "ready",
+    "failed",
+    "deleting",
+  ] as const) {
     const definitions = await ctx.db
       .query("indexDefinitions")
       .withIndex("by_scopeId_and_tableId_and_state", (q) =>
@@ -303,7 +365,8 @@ async function deleteOneIndexBatch(
       )
       .take(BATCH_SIZE);
     for (const entry of entries) await ctx.db.delete("indexEntries", entry._id);
-    if (entries.length === 0) await ctx.db.delete("indexDefinitions", definition._id);
+    if (entries.length === 0)
+      await ctx.db.delete("indexDefinitions", definition._id);
     await ctx.db.patch("jobs", job._id, {
       state: "running",
       phase: "deleteEntries",
@@ -362,5 +425,7 @@ async function rescheduleDeleteTable(
   ctx: Parameters<typeof upsertIndexEntry>[0],
   job: Doc<"jobs">,
 ): Promise<void> {
-  await ctx.scheduler.runAfter(0, internal.indexJobs.processDeleteTableJob, { jobId: job._id });
+  await ctx.scheduler.runAfter(0, internal.indexJobs.processDeleteTableJob, {
+    jobId: job._id,
+  });
 }

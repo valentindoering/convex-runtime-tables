@@ -8,7 +8,10 @@ import type {
 import type { ComponentApi } from "../component/_generated/component.js";
 
 type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
-type MutationCtx = Pick<GenericMutationCtx<GenericDataModel>, "runQuery" | "runMutation">;
+type MutationCtx = Pick<
+  GenericMutationCtx<GenericDataModel>,
+  "runQuery" | "runMutation"
+>;
 type ActionCtx = Pick<
   GenericActionCtx<GenericDataModel>,
   "runQuery" | "runMutation" | "runAction"
@@ -43,17 +46,11 @@ export class RuntimeTables {
     return ctx.runQuery(this.component.public.getRecord, args);
   }
 
-  queryRecords(
-    ctx: ReadCtx,
-    args: PublicArgs<"queryRecords">,
-  ) {
+  queryRecords(ctx: ReadCtx, args: PublicArgs<"queryRecords">) {
     return ctx.runQuery(this.component.public.queryRecords, args);
   }
 
-  explainQuery(
-    ctx: ReadCtx,
-    args: PublicArgs<"explainQuery">,
-  ) {
+  explainQuery(ctx: ReadCtx, args: PublicArgs<"explainQuery">) {
     return ctx.runQuery(this.component.public.explainQuery, args);
   }
 
@@ -61,66 +58,39 @@ export class RuntimeTables {
     return ctx.runQuery(this.component.public.getJob, args);
   }
 
-  createTable(
-    ctx: WriteCtx,
-    args: PublicArgs<"createTable">,
-  ) {
+  createTable(ctx: WriteCtx, args: PublicArgs<"createTable">) {
     return ctx.runMutation(this.component.public.createTable, args);
   }
 
-  updateTable(
-    ctx: WriteCtx,
-    args: PublicArgs<"updateTable">,
-  ) {
+  updateTable(ctx: WriteCtx, args: PublicArgs<"updateTable">) {
     return ctx.runMutation(this.component.public.updateTable, args);
   }
 
-  addField(
-    ctx: WriteCtx,
-    args: PublicArgs<"addField">,
-  ) {
+  addField(ctx: WriteCtx, args: PublicArgs<"addField">) {
     return ctx.runMutation(this.component.public.addField, args);
   }
 
-  updateField(
-    ctx: WriteCtx,
-    args: PublicArgs<"updateField">,
-  ) {
+  updateField(ctx: WriteCtx, args: PublicArgs<"updateField">) {
     return ctx.runMutation(this.component.public.updateField, args);
   }
 
-  insertRecords(
-    ctx: WriteCtx,
-    args: PublicArgs<"insertRecords">,
-  ) {
+  insertRecords(ctx: WriteCtx, args: PublicArgs<"insertRecords">) {
     return ctx.runMutation(this.component.public.insertRecords, args);
   }
 
-  patchRecord(
-    ctx: WriteCtx,
-    args: PublicArgs<"patchRecord">,
-  ) {
+  patchRecord(ctx: WriteCtx, args: PublicArgs<"patchRecord">) {
     return ctx.runMutation(this.component.public.patchRecord, args);
   }
 
-  upsertRecords(
-    ctx: WriteCtx,
-    args: PublicArgs<"upsertRecords">,
-  ) {
+  upsertRecords(ctx: WriteCtx, args: PublicArgs<"upsertRecords">) {
     return ctx.runMutation(this.component.public.upsertRecords, args);
   }
 
-  deleteRecord(
-    ctx: WriteCtx,
-    args: PublicArgs<"deleteRecord">,
-  ) {
+  deleteRecord(ctx: WriteCtx, args: PublicArgs<"deleteRecord">) {
     return ctx.runMutation(this.component.public.deleteRecord, args);
   }
 
-  createIndex(
-    ctx: WriteCtx,
-    args: PublicArgs<"createIndex">,
-  ) {
+  createIndex(ctx: WriteCtx, args: PublicArgs<"createIndex">) {
     return ctx.runMutation(this.component.public.createIndex, args);
   }
 

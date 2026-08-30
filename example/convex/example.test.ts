@@ -10,10 +10,12 @@ describe("host integration", () => {
     const t = initConvexTest();
     const { tableId } = await t.mutation(api.example.initializeDemo, {});
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-    await expect(t.mutation(api.example.forceAtomicRollback, { tableId })).rejects.toThrow(
-      "forced rollback",
+    await expect(
+      t.mutation(api.example.forceAtomicRollback, { tableId }),
+    ).rejects.toThrow("forced rollback");
+    const auditRows = await t.run(
+      async (ctx) => await ctx.db.query("hostAudit").take(10),
     );
-    const auditRows = await t.run(async (ctx) => await ctx.db.query("hostAudit").take(10));
     const result = await t.query(api.example.listTransactions, { tableId });
     expect(auditRows).toHaveLength(0);
     expect(result.page).toHaveLength(0);
@@ -25,8 +27,12 @@ describe("host integration", () => {
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
     const schema = await t.query(api.example.getDemoSchema, {});
     expect(schema).not.toBeNull();
-    const fields = Object.fromEntries(schema!.fields.map((field) => [field.key, field.fieldId]));
-    expect((await t.query(api.example.listTransactions, { tableId })).page).toHaveLength(0);
+    const fields = Object.fromEntries(
+      schema!.fields.map((field) => [field.key, field.fieldId]),
+    );
+    expect(
+      (await t.query(api.example.listTransactions, { tableId })).page,
+    ).toHaveLength(0);
     await t.mutation(api.example.addTransaction, {
       tableId,
       fieldIds: {

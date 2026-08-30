@@ -57,7 +57,11 @@ export async function maintainRecordIndexes(
   ctx: MutationCtx,
   record: Doc<"records">,
 ): Promise<void> {
-  const indexes = await loadIndexesForWrites(ctx, record.scopeId, record.tableId);
+  const indexes = await loadIndexesForWrites(
+    ctx,
+    record.scopeId,
+    record.tableId,
+  );
   for (const index of indexes) {
     await upsertIndexEntry(ctx, index, record);
   }
@@ -69,7 +73,10 @@ export async function upsertIndexEntry(
   record: Doc<"records">,
   enforceUnique = true,
 ): Promise<void> {
-  const [k0, k1, k2] = normalizeIndexSlots(index.fieldIds, record.values as Record<string, Scalar>);
+  const [k0, k1, k2] = normalizeIndexSlots(
+    index.fieldIds,
+    record.values as Record<string, Scalar>,
+  );
   if (
     enforceUnique &&
     index.unique &&
@@ -89,15 +96,22 @@ export async function upsertIndexEntry(
       )
       .take(2);
     if (collisions.some((entry) => entry.recordId !== record._id)) {
-      fail("UNIQUE_CONFLICT", `Unique index ${index.name} already contains this key`, {
-        indexId: index._id,
-      });
+      fail(
+        "UNIQUE_CONFLICT",
+        `Unique index ${index.name} already contains this key`,
+        {
+          indexId: index._id,
+        },
+      );
     }
   }
   const current = await ctx.db
     .query("indexEntries")
     .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
-      q.eq("scopeId", index.scopeId).eq("indexId", index._id).eq("recordId", record._id),
+      q
+        .eq("scopeId", index.scopeId)
+        .eq("indexId", index._id)
+        .eq("recordId", record._id),
     )
     .unique();
   if (!current) {
@@ -113,7 +127,12 @@ export async function upsertIndexEntry(
     return;
   }
   if (current.recordRev > record.rev) return;
-  await ctx.db.patch("indexEntries", current._id, { k0, k1, k2, recordRev: record.rev });
+  await ctx.db.patch("indexEntries", current._id, {
+    k0,
+    k1,
+    k2,
+    recordRev: record.rev,
+  });
 }
 
 export async function deleteRecordIndexEntries(
