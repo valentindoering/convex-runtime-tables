@@ -63,10 +63,11 @@ try {
     CONVEX_DISABLE_SENTRY: "1",
     NO_COLOR: "1",
   };
-  devProcess = await startConvex(consumer, environment);
+  const convexExecutable = join(consumer, "node_modules", ".bin", "convex");
+  devProcess = await startConvex(convexExecutable, consumer, environment);
   const generated = join(consumer, "convex", "_generated");
   const before = await directoryDigest(generated);
-  run("npx", ["convex", "codegen"], consumer, environment);
+  run(convexExecutable, ["codegen"], consumer, environment);
   const after = await directoryDigest(generated);
   if (before !== after)
     throw new Error(
@@ -145,17 +146,14 @@ try {
   }
   succeeded = true;
 } finally {
-  if (devProcess && devProcess.exitCode === null) {
-    devProcess.kill("SIGTERM");
-    await new Promise((resolve) => devProcess.once("exit", resolve));
-  }
+  await stopProcess(devProcess);
   if (succeeded) await rm(temporary, { recursive: true, force: true });
   else process.stderr.write(`Consumer workspace retained at ${temporary}\n`);
 }
 
-async function startConvex(cwd, env) {
-  process.stdout.write("$ npx convex dev\n");
-  const child = spawn("npx", ["convex", "dev"], {
+async function startConvex(executable, cwd, env) {
+  process.stdout.write(`$ ${executable} dev\n`);
+  const child = spawn(executable, ["dev"], {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -183,6 +181,31 @@ async function startConvex(cwd, env) {
     });
   });
   return child;
+}
+
+async function stopProcess(child) {
+  if (!child || child.exitCode !== null) return;
+  const terminated = waitForExit(child, 5_000);
+  child.kill("SIGTERM");
+  if (await terminated) return;
+  const killed = waitForExit(child, 5_000);
+  child.kill("SIGKILL");
+  if (!(await killed)) throw new Error("Convex dev process did not stop");
+}
+
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    const finish = (exited) => {
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    child.once("exit", onExit);
+    if (child.exitCode !== null) finish(true);
+  });
 }
 
 function run(command, args, cwd, env = process.env) {
