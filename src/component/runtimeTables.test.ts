@@ -1960,6 +1960,119 @@ describe("runtime tables component", () => {
     ).resolves.toHaveLength(1);
   });
 
+  test("dropping a failed formerly ready unique index immediately resumes writes", async () => {
+    const t = initConvexTest();
+    const testScope = "test-unique-failed-drop-exit";
+    const created = await createTransactionsTable(t, testScope);
+    const [first] = await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [{ values: valuesFor(created.fieldIds, 1) }],
+    });
+    const { indexId } = await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRefUnique",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: true,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
+      scopeId: testScope,
+      recordId: first!.recordId,
+      values: {
+        ...valuesFor(created.fieldIds, 1),
+        [created.fieldIds.merchant!]: "Skipped before drop",
+      },
+    });
+    await t.mutation(api.public.verifyIndex, { scopeId: testScope, indexId });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+    await t.mutation(api.public.deleteIndex, { scopeId: testScope, indexId });
+    expect(
+      (
+        await t.query(api.public.getTable, {
+          scopeId: testScope,
+          tableId: created.tableId,
+        })
+      ).indexes.find((index) => index._id === indexId),
+    ).toMatchObject({ state: "deleting" });
+    await expect(
+      t.mutation(api.public.insertRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        records: [{ values: valuesFor(created.fieldIds, 2) }],
+      }),
+    ).resolves.toHaveLength(1);
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  });
+
+  test("ordinary patches restamp every sidecar record revision", async () => {
+    const t = initConvexTest();
+    const testScope = "test-record-rev-restamp";
+    const created = await createTransactionsTable(t, testScope);
+    const [first] = await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [{ values: valuesFor(created.fieldIds, 1) }],
+    });
+    await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRef",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: false,
+    });
+    await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "accountDate",
+      fieldIds: [created.fieldIds.accountId!, created.fieldIds.bookingDate!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const before = await t.run(async (ctx) =>
+      ctx.db
+        .query("indexEntries")
+        .withIndex("by_scopeId_and_recordId_and_indexId", (q) =>
+          q.eq("scopeId", testScope).eq("recordId", first!.recordId),
+        )
+        .take(5),
+    );
+    expect(before).toHaveLength(2);
+    expect(before.every((entry) => entry.recordRev === 1)).toBe(true);
+
+    const patched = await t.mutation(api.public.patchRecord, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      recordId: first!.recordId,
+      patch: {
+        values: { [created.fieldIds.merchant!]: "Non-indexed change" },
+      },
+      expectedRev: 1,
+    });
+    expect(patched.rev).toBe(2);
+    const after = await t.run(async (ctx) =>
+      ctx.db
+        .query("indexEntries")
+        .withIndex("by_scopeId_and_recordId_and_indexId", (q) =>
+          q.eq("scopeId", testScope).eq("recordId", first!.recordId),
+        )
+        .take(5),
+    );
+    expect(after).toHaveLength(2);
+    expect(after.every((entry) => entry.recordRev === 2)).toBe(true);
+    expect(
+      after
+        .map((entry) => [entry.indexId, entry.k0, entry.k1, entry.k2])
+        .sort(),
+    ).toEqual(
+      before
+        .map((entry) => [entry.indexId, entry.k0, entry.k1, entry.k2])
+        .sort(),
+    );
+  });
+
   test("a failed verified index cannot remain authoritative for a large table", async () => {
     const t = initConvexTest();
     const testScope = "test-failed-index-large-table";

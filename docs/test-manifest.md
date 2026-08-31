@@ -40,6 +40,10 @@ Focused release-blocker regressions are
 `src/component/runtimeTables.test.ts`. The latter also proves that a never-ready
 unique build does not block initial population and that rejected outage writes
 leave no partial record or sidecar state.
+`dropping a failed formerly ready unique index immediately resumes writes`
+proves index deletion is an immediate exit path before purge completes.
+`ordinary patches restamp every sidecar record revision` protects the revision
+invariant used by indexed hydration when only a non-indexed field changes.
 `a stalled verification leaves a ready index serving and can restart` proves the
 stalled-job sweep preserves serving state, fails maintenance observably, and
 permits a newer verification generation.

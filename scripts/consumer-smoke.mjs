@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
@@ -21,6 +21,7 @@ const packDirectory = join(temporary, "pack");
 const hostedGate =
   process.env.CONVEX_HOSTED_GATE === "1" ||
   Boolean(process.env.CONVEX_DEPLOY_KEY);
+const scopePrefix = `packed-consumer-${randomUUID()}`;
 let succeeded = false;
 let devProcess;
 const baseEnvironment = {
@@ -108,48 +109,29 @@ try {
   const writer = new convexBrowser.ConvexClient(deploymentUrl);
   const subscriber = new convexBrowser.ConvexClient(deploymentUrl);
   try {
-    const initialized = await writer.mutation(
-      generatedApi.api.smoke.initialize,
-      {},
-    );
-    const firstQuery = await subscriber.query(generatedApi.api.smoke.list, {
-      tableId: initialized.tableId,
-    });
-    if (firstQuery.count !== 1)
-      throw new Error(
-        `Expected one packed-consumer row, got ${firstQuery.count}`,
+    const smokeRuns = [];
+    for (let run = 1; run <= 2; run += 1) {
+      smokeRuns.push(
+        await runSmokeFixture(
+          writer,
+          subscriber,
+          generatedApi.api.smoke,
+          `${scopePrefix}-${run}`,
+        ),
       );
-
-    const update = new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Reactive subscription timed out")),
-        15_000,
-      );
-      const unsubscribe = subscriber.onUpdate(
-        generatedApi.api.smoke.list,
-        { tableId: initialized.tableId },
-        (value) => {
-          if (value.count >= 2) {
-            clearTimeout(timeout);
-            unsubscribe();
-            resolve(value);
-          }
-        },
-      );
-    });
-    await writer.mutation(generatedApi.api.smoke.add, {
-      tableId: initialized.tableId,
-      key: "second",
-      value: "from-another-client",
-    });
-    const reactive = await update;
+    }
+    const lastRun = smokeRuns.at(-1);
     process.stdout.write(
       `${JSON.stringify({
         tarball: basename(tarball),
         mutation: "ok",
-        queryCount: firstQuery.count,
-        reactiveCount: reactive.count,
+        queryCount: lastRun.queryCount,
+        reactiveCount: lastRun.reactiveCount,
         codegenFresh: before === after,
+        runs: smokeRuns.length,
+        cleanup: smokeRuns.every((run) => run.cleanup === "succeeded")
+          ? "succeeded"
+          : "failed",
       })}\n`,
     );
   } finally {
@@ -161,6 +143,109 @@ try {
   await stopProcess(devProcess);
   if (succeeded) await rm(temporary, { recursive: true, force: true });
   else process.stderr.write(`Consumer workspace retained at ${temporary}\n`);
+}
+
+async function runSmokeFixture(writer, subscriber, api, scopeId) {
+  let tableId;
+  let result;
+  let primaryError;
+  let updateTimeout;
+  let unsubscribe;
+  const closeSubscription = () => {
+    if (updateTimeout) clearTimeout(updateTimeout);
+    updateTimeout = undefined;
+    if (unsubscribe) unsubscribe();
+    unsubscribe = undefined;
+  };
+  try {
+    const initialized = await writer.mutation(api.initialize, { scopeId });
+    tableId = initialized.tableId;
+    const firstQuery = await subscriber.query(api.list, { scopeId, tableId });
+    if (firstQuery.count !== 1)
+      throw new Error(
+        `Expected one packed-consumer row, got ${firstQuery.count}`,
+      );
+
+    const update = new Promise((resolve, reject) => {
+      updateTimeout = setTimeout(
+        () => reject(new Error("Reactive subscription timed out")),
+        15_000,
+      );
+      unsubscribe = subscriber.onUpdate(
+        api.list,
+        { scopeId, tableId },
+        (value) => {
+          if (value.count >= 2) {
+            closeSubscription();
+            resolve(value);
+          }
+        },
+      );
+    });
+    await writer.mutation(api.add, {
+      scopeId,
+      tableId,
+      key: "second",
+      value: "from-another-client",
+    });
+    const reactive = await update;
+    result = {
+      queryCount: firstQuery.count,
+      reactiveCount: reactive.count,
+    };
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    closeSubscription();
+  }
+
+  let cleanupError;
+  if (tableId) {
+    try {
+      await cleanupSmokeFixture(writer, api, scopeId, tableId);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (primaryError) {
+    if (cleanupError)
+      process.stderr.write(
+        `Best-effort consumer cleanup also failed: ${errorMessage(cleanupError)}\n`,
+      );
+    throw primaryError;
+  }
+  if (cleanupError) throw cleanupError;
+  if (!result || !tableId)
+    throw new Error("Packed consumer did not initialize its fixture");
+  return { ...result, cleanup: "succeeded" };
+}
+
+async function cleanupSmokeFixture(writer, api, scopeId, tableId) {
+  const deletion = await writer.mutation(api.deleteTable, { scopeId, tableId });
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const job = await writer.query(api.getJob, {
+      scopeId,
+      jobId: deletion.jobId,
+    });
+    if (!job) throw new Error("Consumer cleanup job disappeared");
+    if (job.state === "succeeded") {
+      const remaining = await writer.query(api.remainingTables, { scopeId });
+      if (remaining !== 0)
+        throw new Error(
+          `Consumer cleanup left ${remaining} table(s) in scope ${scopeId}`,
+        );
+      return;
+    }
+    if (job.state === "failed" || job.state === "superseded")
+      throw new Error(`Consumer cleanup job ended as ${job.state}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Consumer cleanup job timed out");
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function startConvex(executable, cwd, env, hosted) {
@@ -267,14 +352,20 @@ export default app;
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 
-const scopeId = "packed-consumer";
+const jobStateValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+  v.literal("superseded"),
+);
 
 export const initialize = mutation({
-  args: {},
+  args: { scopeId: v.string() },
   returns: v.object({ tableId: v.string() }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const created = await ctx.runMutation(components.runtimeTables.public.createTable, {
-      scopeId,
+      scopeId: args.scopeId,
       slug: "items",
       name: "Items",
       fields: [
@@ -283,7 +374,7 @@ export const initialize = mutation({
       ],
     });
     await ctx.runMutation(components.runtimeTables.public.insertRecords, {
-      scopeId,
+      scopeId: args.scopeId,
       tableId: created.table._id,
       records: [{ values: {
         [created.fields[0]!._id]: "first",
@@ -295,17 +386,22 @@ export const initialize = mutation({
 });
 
 export const add = mutation({
-  args: { tableId: v.string(), key: v.string(), value: v.string() },
+  args: {
+    scopeId: v.string(),
+    tableId: v.string(),
+    key: v.string(),
+    value: v.string(),
+  },
   returns: v.string(),
   handler: async (ctx, args) => {
     const schema = await ctx.runQuery(components.runtimeTables.public.getTable, {
-      scopeId,
+      scopeId: args.scopeId,
       tableId: args.tableId,
     });
     const keyId = schema.fields.find((field) => field.key === "key")!._id;
     const valueId = schema.fields.find((field) => field.key === "value")!._id;
     const [written] = await ctx.runMutation(components.runtimeTables.public.insertRecords, {
-      scopeId,
+      scopeId: args.scopeId,
       tableId: args.tableId,
       records: [{ values: { [keyId]: args.key, [valueId]: args.value } }],
     });
@@ -314,11 +410,11 @@ export const add = mutation({
 });
 
 export const list = query({
-  args: { tableId: v.string() },
+  args: { scopeId: v.string(), tableId: v.string() },
   returns: v.object({ count: v.number(), values: v.array(v.string()) }),
   handler: async (ctx, args) => {
     const result = await ctx.runQuery(components.runtimeTables.public.queryRecords, {
-      scopeId,
+      scopeId: args.scopeId,
       tableId: args.tableId,
       query: { where: [] },
       pagination: { pageSize: 100 },
@@ -327,6 +423,41 @@ export const list = query({
       count: result.page.length,
       values: result.page.map((record) => JSON.stringify(record.values)),
     };
+  },
+});
+
+export const deleteTable = mutation({
+  args: { scopeId: v.string(), tableId: v.string() },
+  returns: v.object({ jobId: v.string() }),
+  handler: async (ctx, args) => {
+    return await ctx.runMutation(components.runtimeTables.public.deleteTable, {
+      scopeId: args.scopeId,
+      tableId: args.tableId,
+    });
+  },
+});
+
+export const getJob = query({
+  args: { scopeId: v.string(), jobId: v.string() },
+  returns: v.union(v.null(), v.object({ state: jobStateValidator })),
+  handler: async (ctx, args) => {
+    const job = await ctx.runQuery(components.runtimeTables.public.getJob, {
+      scopeId: args.scopeId,
+      jobId: args.jobId,
+    });
+    return job ? { state: job.state } : null;
+  },
+});
+
+export const remainingTables = query({
+  args: { scopeId: v.string() },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const tables = await ctx.runQuery(components.runtimeTables.public.listTables, {
+      scopeId: args.scopeId,
+      pagination: { pageSize: 100 },
+    });
+    return tables.page.length;
   },
 });
 `,

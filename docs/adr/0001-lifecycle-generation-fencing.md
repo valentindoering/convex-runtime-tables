@@ -44,6 +44,11 @@ observable failure. There is no automatic retry policy for unexpected errors; an
 operator must call the explicit retry or repair operation. `batchCount` and
 `retryCount` therefore have distinct meanings.
 
+Hosts must alert on failed jobs and failed maintenance state. The component does
+not automatically repair or retry a persistent verification mismatch; recovery
+is an explicit operator decision so a writer defect cannot create an unbounded
+repair loop.
+
 The hourly retention sweep also queries queued and running jobs through
 `jobs.by_state_and_updatedAt`. A job with no progress for five minutes is failed
 through the same generation-fenced unexpected-failure path with `JOB_STALLED`.

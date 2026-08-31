@@ -6,9 +6,9 @@ revision, so this document does not claim release readiness.
 
 ## Local deterministic gates
 
-- `npm test`: 92 tests across 8 files passed in 14.44 seconds with no type
+- `npm test`: 94 tests across 8 files passed in 14.79 seconds with no type
   errors.
-- `npm run test:coverage`: 92 tests passed in 46.61 seconds. Overall coverage is
+- `npm run test:coverage`: 94 tests passed in 48.15 seconds. Overall coverage is
   88.41% statements, 75.07% branches, 93.24% functions, and 90.70% lines.
   Critical-file branch coverage is planner 69.03%, index data 86.20%, and
   lifecycle jobs 80.86%.
@@ -23,9 +23,10 @@ revision, so this document does not claim release readiness.
   mounted the component, code-generated twice without drift, executed a mutation
   and query, and delivered a `ConvexClient.onUpdate` callback from a second
   client. The result was `mutation=ok`, `queryCount=1`, `reactiveCount=2`, and
-  `codegenFresh=true`. The tarball contained 104 files and was 104.8 kB
-  compressed / 653.6 kB unpacked. Its inspected contents had no test module or
-  fault-injection hook.
+  `codegenFresh=true`. It ran two isolated fixtures on the same deployment and
+  returned `cleanup=succeeded` after both deletion jobs and zero-table checks.
+  The tarball contained 104 files and was 104.8 kB compressed / 653.6 kB
+  unpacked. Its inspected contents had no test module or fault-injection hook.
 - Focused hardening regressions prove stale/orphaned indexed reads return
   `INDEX_NOT_READY`, formerly-ready unique indexes block writes without partial
   state until repair, stalled ready-index verification can restart, and 192
@@ -66,6 +67,15 @@ subscription passed, but the run was canceled during its 100,000-row step after
 that SHA became obsolete. It does not certify commits `962bd9b` or `b62539b`.
 The final-SHA hosted packed-consumer and 100,000-row gates remain pending and
 must not be summarized as passing until a run completes with exact cleanup.
+
+Hosted run `33439167267` targeted `c668a5268e48cde2c02178315e113f4f7389ff7c`.
+Its packed-consumer step failed because the smoke wrapper reused fixed scope
+`packed-consumer` and slug `items` left by the canceled run; the 100,000-row
+step was skipped. This is a repeatable test-fixture cleanup defect, not evidence
+of a component failure. The revised consumer uses unique per-run scopes,
+executes twice on one deployment, deletes each table through the component,
+waits for a succeeded deletion job, and requires zero remaining tables before
+reporting `cleanup="succeeded"`.
 
 The revised 100,000-row harness now:
 
