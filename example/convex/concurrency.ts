@@ -79,14 +79,14 @@ export const initializeDeleteBackfillRace = mutation({
     const keyId = created.fields.find((field) => field.key === "key")!._id;
     const valueId = created.fields.find((field) => field.key === "value")!._id;
     const ids: string[] = [];
-    for (let start = 0; start < 205; start += 100) {
+    for (let start = 0; start < 1_000; start += 100) {
       const records = await ctx.runMutation(
         components.runtimeTables.public.insertRecords,
         {
           scopeId: scope(args.runId),
           tableId: created.table._id,
           records: Array.from(
-            { length: Math.min(100, 205 - start) },
+            { length: Math.min(100, 1_000 - start) },
             (_, offset) => ({
               values: {
                 [keyId]: `r1-${args.iteration}-${start + offset}`,

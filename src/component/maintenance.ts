@@ -25,17 +25,18 @@ export const cleanupExpired = internalMutation({
       .take(CLEANUP_BATCH);
     for (const job of jobs) await ctx.db.delete("jobs", job._id);
 
-    const stalled: Doc<"jobs">[] = [];
+    const stalledGroups: Doc<"jobs">[][] = [];
     for (const state of ["queued", "running"] as const) {
-      stalled.push(
-        ...(await ctx.db
+      stalledGroups.push(
+        await ctx.db
           .query("jobs")
           .withIndex("by_state_and_updatedAt", (q) =>
             q.eq("state", state).lt("updatedAt", now - JOB_STALL_MS),
           )
-          .take(CLEANUP_BATCH)),
+          .take(CLEANUP_BATCH + 1),
       );
     }
+    const stalled = stalledGroups.flat();
     for (const job of stalled.slice(0, CLEANUP_BATCH)) {
       await ctx.scheduler.runAfter(
         0,
@@ -54,7 +55,7 @@ export const cleanupExpired = internalMutation({
     if (
       keys.length === CLEANUP_BATCH ||
       jobs.length === CLEANUP_BATCH ||
-      stalled.length > CLEANUP_BATCH
+      stalled.length >= CLEANUP_BATCH
     ) {
       await ctx.scheduler.runAfter(0, internal.maintenance.cleanupExpired, {});
     }

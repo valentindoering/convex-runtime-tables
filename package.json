@@ -23,7 +23,7 @@
     "dev:build": "chokidar 'tsconfig*.json' 'src/**/*.ts' -i '**/*.test.ts' -c 'npm run build:codegen' --initial",
     "build": "node scripts/clean-dist.mjs && tsc --project ./tsconfig.build.json",
     "build:codegen": "npx convex codegen --component-dir ./src/component && npm run build",
-    "check:codegen": "npm run build:codegen && git diff --exit-code -- src/component/_generated",
+    "check:codegen": "npm run build:codegen && git diff --exit-code -- src/component/_generated example/convex/_generated",
     "build:clean": "rm -rf dist *.tsbuildinfo && npm run build:codegen",
     "typecheck": "tsc --noEmit && tsc -p example && tsc -p example/convex",
     "format": "prettier --check .",

@@ -1733,6 +1733,64 @@ describe("runtime tables component", () => {
     ).toMatchObject({ state: "failed", maintenanceState: "failed" });
   });
 
+  test("reschedules stalled-job cleanup when one state exceeds the sweep cap", async () => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t, "test-stalled-cap");
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let offset = 0; offset < 101; offset += 1) {
+        const jobId = await ctx.db.insert("jobs", {
+          scopeId: "test-stalled-cap",
+          kind: "buildIndex",
+          targetId: "pending",
+          state: "running",
+          phase: "backfill",
+          cursor: null,
+          progress: 0,
+          generation: 1,
+          batchCount: 1,
+          retryCount: 0,
+          lastError: null,
+          createdAt: now - 600_000,
+          updatedAt: now - 600_000,
+        });
+        const indexId = await ctx.db.insert("indexDefinitions", {
+          scopeId: "test-stalled-cap",
+          tableId: created.tableId,
+          name: `stalled-${offset}`,
+          fieldIds: [created.fieldIds.sourceRef!],
+          unique: false,
+          state: "building",
+          maintenanceState: "backfilling",
+          generation: 1,
+          activeJobId: jobId,
+          failure: null,
+          createdAt: now - 600_000,
+          updatedAt: now - 600_000,
+        });
+        await ctx.db.patch("jobs", jobId, { targetId: indexId });
+      }
+    });
+    await t.mutation(internal.maintenance.cleanupExpired, {});
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const states = await t.run(async (ctx) => ({
+      failed: await ctx.db
+        .query("jobs")
+        .withIndex("by_scopeId_and_state", (q) =>
+          q.eq("scopeId", "test-stalled-cap").eq("state", "failed"),
+        )
+        .take(102),
+      running: await ctx.db
+        .query("jobs")
+        .withIndex("by_scopeId_and_state", (q) =>
+          q.eq("scopeId", "test-stalled-cap").eq("state", "running"),
+        )
+        .take(1),
+    }));
+    expect(states.failed).toHaveLength(101);
+    expect(states.running).toHaveLength(0);
+  });
+
   test("paginates listTables without silent truncation", async () => {
     const t = initConvexTest();
     for (let index = 0; index < 12; index += 1) {

@@ -57,6 +57,14 @@ try {
       tableId: race.tableId,
       keyId: race.keyId,
     });
+    const buildState = await left.query(api.concurrency.getJob, {
+      runId,
+      jobId: build.jobId,
+    });
+    assert(
+      buildState === "queued" || buildState === "running",
+      `R1 build completed before the delete invocation (${String(buildState)})`,
+    );
     await right.mutation(api.concurrency.deleteOne, {
       runId,
       tableId: race.tableId,
@@ -64,7 +72,7 @@ try {
     });
     await waitForJob(api, runId, build.jobId);
     const oracle = await assertOracle(api, { ...race, indexId: build.indexId });
-    assert(oracle.recordCount === 204, `R1 stored ${oracle.recordCount} rows`);
+    assert(oracle.recordCount === 999, `R1 stored ${oracle.recordCount} rows`);
     const cleanup = await left.mutation(api.concurrency.deleteTable, {
       runId,
       tableId: race.tableId,

@@ -6,28 +6,32 @@ revision, so this document does not claim release readiness.
 
 ## Local deterministic gates
 
-- `npm test`: 87 tests across 8 files passed with no type errors.
-- `npm run test:coverage`: 87 tests passed in 46.91 seconds. Overall coverage is
-  87.81% statements, 73.54% branches, 93.19% functions, and 90.18% lines.
+- `npm test`: 88 tests across 8 files passed with no type errors.
+- `npm run test:coverage`: 88 tests passed in 47.64 seconds. Overall coverage is
+  87.91% statements, 73.67% branches, 93.22% functions, and 90.28% lines.
   Critical-file branch coverage is planner 65.23%, index data 81.81%, and
   lifecycle jobs 79.20%.
 - `npm run test:real-concurrency`: an anonymous local Convex backend passed 20
   two-client repetitions each for delete versus backfill, unique insertion,
-  idempotent insertion, and expected-revision patching. The final 5,000-row
-  concurrent idempotent import reported 5,080 records and 5,080 exact sidecar
-  entries after including the preceding race fixtures.
+  idempotent insertion, and expected-revision patching. R1 used 1,000 rows and
+  asserted that the build was still queued or running immediately before the
+  second client deleted its target. The final 5,000-row concurrent idempotent
+  import reported 5,080 records and 5,080 exact sidecar entries after including
+  the preceding race fixtures.
 - `npm run test:consumer`: the exact tarball installed into a clean consumer,
   mounted the component, code-generated twice without drift, executed a mutation
   and query, and delivered a `ConvexClient.onUpdate` callback from a second
   client. The result was `mutation=ok`, `queryCount=1`, `reactiveCount=2`, and
-  `codegenFresh=true`. The tarball contained 104 files and was 103.3 kB
-  compressed / 645.9 kB unpacked. Its inspected contents had no test module or
+  `codegenFresh=true`. The tarball contained 104 files and was 103.4 kB
+  compressed / 646.3 kB unpacked. Its inspected contents had no test module or
   fault-injection hook.
 - `SCALE_ROW_COUNT=1000 npm run test:scale`: the revised harness passed its
   exact known-survivor assertion, two independent raw-sidecar oracles, both
   indexes in both directions, selected-index checks on every page, and table
-  purge with zero remaining tables. It completed in 2,782 ms with 990 expected
+  purge with zero remaining tables. It completed in 2,685 ms with 990 expected
   survivors and 1,980 sidecar entries.
+- The clean-worktree CI bootstrap (`convex dev --once`, component codegen, and
+  generated-file diff) passed without a pre-existing `.env.local`.
 - `npm run format`, `npm run lint`, `npm run typecheck`, and `npm run build`
   passed locally.
 
