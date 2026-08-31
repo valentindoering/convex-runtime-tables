@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
@@ -21,7 +21,7 @@ const packDirectory = join(temporary, "pack");
 const hostedGate =
   process.env.CONVEX_HOSTED_GATE === "1" ||
   Boolean(process.env.CONVEX_DEPLOY_KEY);
-const scopePrefix = `packed-consumer-${randomUUID()}`;
+const smokeScopeId = "packed-consumer";
 let succeeded = false;
 let devProcess;
 const baseEnvironment = {
@@ -109,6 +109,7 @@ try {
   const writer = new convexBrowser.ConvexClient(deploymentUrl);
   const subscriber = new convexBrowser.ConvexClient(deploymentUrl);
   try {
+    await purgeSmokeScope(writer, generatedApi.api.smoke, smokeScopeId);
     const smokeRuns = [];
     for (let run = 1; run <= 2; run += 1) {
       smokeRuns.push(
@@ -116,7 +117,7 @@ try {
           writer,
           subscriber,
           generatedApi.api.smoke,
-          `${scopePrefix}-${run}`,
+          smokeScopeId,
         ),
       );
     }
@@ -129,6 +130,7 @@ try {
         reactiveCount: lastRun.reactiveCount,
         codegenFresh: before === after,
         runs: smokeRuns.length,
+        preflight: "succeeded",
         cleanup: smokeRuns.every((run) => run.cleanup === "succeeded")
           ? "succeeded"
           : "failed",
@@ -221,6 +223,21 @@ async function runSmokeFixture(writer, subscriber, api, scopeId) {
 }
 
 async function cleanupSmokeFixture(writer, api, scopeId, tableId) {
+  await deleteSmokeTable(writer, api, scopeId, tableId);
+  await assertSmokeScopeEmpty(writer, api, scopeId);
+}
+
+async function purgeSmokeScope(writer, api, scopeId) {
+  while (true) {
+    const tableIds = await writer.query(api.listTables, { scopeId });
+    if (tableIds.length === 0) return;
+    for (const tableId of tableIds) {
+      await deleteSmokeTable(writer, api, scopeId, tableId);
+    }
+  }
+}
+
+async function deleteSmokeTable(writer, api, scopeId, tableId) {
   const deletion = await writer.mutation(api.deleteTable, { scopeId, tableId });
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -229,19 +246,20 @@ async function cleanupSmokeFixture(writer, api, scopeId, tableId) {
       jobId: deletion.jobId,
     });
     if (!job) throw new Error("Consumer cleanup job disappeared");
-    if (job.state === "succeeded") {
-      const remaining = await writer.query(api.remainingTables, { scopeId });
-      if (remaining !== 0)
-        throw new Error(
-          `Consumer cleanup left ${remaining} table(s) in scope ${scopeId}`,
-        );
-      return;
-    }
+    if (job.state === "succeeded") return;
     if (job.state === "failed" || job.state === "superseded")
       throw new Error(`Consumer cleanup job ended as ${job.state}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Consumer cleanup job timed out");
+}
+
+async function assertSmokeScopeEmpty(writer, api, scopeId) {
+  const tableIds = await writer.query(api.listTables, { scopeId });
+  if (tableIds.length !== 0)
+    throw new Error(
+      `Consumer cleanup left ${tableIds.length} table(s) in scope ${scopeId}`,
+    );
 }
 
 function errorMessage(error) {
@@ -449,15 +467,15 @@ export const getJob = query({
   },
 });
 
-export const remainingTables = query({
+export const listTables = query({
   args: { scopeId: v.string() },
-  returns: v.number(),
+  returns: v.array(v.string()),
   handler: async (ctx, args) => {
     const tables = await ctx.runQuery(components.runtimeTables.public.listTables, {
       scopeId: args.scopeId,
       pagination: { pageSize: 100 },
     });
-    return tables.page.length;
+    return tables.page.map((table) => table._id);
   },
 });
 `,

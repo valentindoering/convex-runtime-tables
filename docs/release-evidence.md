@@ -23,10 +23,11 @@ revision, so this document does not claim release readiness.
   mounted the component, code-generated twice without drift, executed a mutation
   and query, and delivered a `ConvexClient.onUpdate` callback from a second
   client. The result was `mutation=ok`, `queryCount=1`, `reactiveCount=2`, and
-  `codegenFresh=true`. It ran two isolated fixtures on the same deployment and
-  returned `cleanup=succeeded` after both deletion jobs and zero-table checks.
-  The tarball contained 104 files and was 104.8 kB compressed / 653.6 kB
-  unpacked. Its inspected contents had no test module or fault-injection hook.
+  `codegenFresh=true`. It purged the reserved smoke scope before running, then
+  ran the same fixture twice on that scope and returned `cleanup=succeeded`
+  after both deletion jobs and zero-table checks. The tarball contained 104
+  files and was 104.8 kB compressed / 653.6 kB unpacked. Its inspected contents
+  had no test module or fault-injection hook.
 - Focused hardening regressions prove stale/orphaned indexed reads return
   `INDEX_NOT_READY`, formerly-ready unique indexes block writes without partial
   state until repair, stalled ready-index verification can restart, and 192
@@ -72,10 +73,11 @@ Hosted run `33439167267` targeted `c668a5268e48cde2c02178315e113f4f7389ff7c`.
 Its packed-consumer step failed because the smoke wrapper reused fixed scope
 `packed-consumer` and slug `items` left by the canceled run; the 100,000-row
 step was skipped. This is a repeatable test-fixture cleanup defect, not evidence
-of a component failure. The revised consumer uses unique per-run scopes,
-executes twice on one deployment, deletes each table through the component,
-waits for a succeeded deletion job, and requires zero remaining tables before
-reporting `cleanup="succeeded"`.
+of a component failure. The revised consumer preflights the fixed reserved scope
+by deleting every table and waiting for every deletion job, so it also recovers
+residue from an abruptly canceled process. It then executes twice on that same
+scope, deletes each table through the component, and requires zero remaining
+tables before reporting `cleanup="succeeded"`.
 
 The revised 100,000-row harness now:
 
