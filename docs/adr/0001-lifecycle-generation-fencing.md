@@ -33,6 +33,11 @@ after its job failed starts a new generation. Repeating the same active
 maintenance operation returns its existing job; a different maintenance
 operation starts a newer generation and supersedes the old callback.
 
+Table deletion fences its bounded set of child indexes in the same mutation as
+the table state change. Each child moves to `deleting`, increments generation,
+and clears `activeJobId` before the table purge is scheduled. Any already queued
+index callback observes the mismatch and becomes `superseded`.
+
 Scheduled work enters through an internal action. Each batch runs as a nested
 mutation. A thrown batch rolls back, then a separate mutation records an
 observable failure. There is no automatic retry policy for unexpected errors; an
@@ -62,6 +67,12 @@ bounded diagnostics, and increments the owning table's `schemaRev`. The planner
 stops selecting it immediately. Small queries may use the bounded scan fallback;
 large queries that match the failed index return `INDEX_NOT_READY` with the
 failed index ID. A failed index cannot remain an authoritative read path.
+
+A unique index also carries a monotonic `uniqueEnforcementActivated` marker.
+Initial builds leave it false so ordinary population remains possible. The first
+successful independent verification sets it true. A later verification failure
+retains it, and ordinary inserts, patches, and upserts fail atomically with
+`INDEX_NOT_READY` until repair and verification return the index to ready.
 
 ## Consequences
 

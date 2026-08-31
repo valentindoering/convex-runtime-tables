@@ -30,11 +30,15 @@ Larger tables throw `INDEX_REQUIRED` and `explainQuery` returns a deterministic
 field list in `suggestedIndex`; no partial data is returned.
 
 A ready index remains selectable while read-only operator verification is in
-progress. If verification proves sidecar drift, the index changes to `failed`,
-the table schema revision increments, and old cursors become invalid. Small
-queries use the bounded scan fallback. A large query that would otherwise match
-that failed index returns `INDEX_NOT_READY` with the index ID instead of using
-the sidecar or suggesting the same index again.
+progress. Every indexed page first checks that each sidecar hydrates to a record
+in the same scope/table with the exact stored revision. Any orphan, cross-table
+pointer, or revision mismatch returns `INDEX_NOT_READY` and no partial page;
+only then are legitimate residual predicates post-filtered. If verification
+proves sidecar drift, the index changes to `failed`, the table schema revision
+increments, and old cursors become invalid. Small queries use the bounded scan
+fallback. A large query that would otherwise match that failed index returns
+`INDEX_NOT_READY` with the index ID instead of using the sidecar or suggesting
+the same index again.
 
 More than one range field returns `UNSUPPORTED_QUERY` with no index suggestion.
 If a query would require more than the three supported index fields, it also
@@ -67,8 +71,11 @@ tie-break prevents duplicate keys.
 - Indexed strings are at most 1 KiB.
 - Unique indexes allow multiple records with null or missing key parts. Upsert
   keys cannot contain null or missing parts.
-- Failed and building indexes are not selected and do not enforce uniqueness. A
-  build becomes ready only after repair and an independent duplicate check.
+- Building indexes are not selected and do not enforce uniqueness before their
+  first successful verification. After a unique index has once been ready, its
+  monotonic enforcement marker blocks table writes with `INDEX_NOT_READY`
+  whenever the index is failed. Repair plus verification restores writes. Record
+  deletion and index deletion remain available as cleanup/exit paths.
 - Numbers are finite and canonicalize `-0` to `0`.
 - Timestamps are safe integer epoch milliseconds.
 - Descending order reverses the complete native key.

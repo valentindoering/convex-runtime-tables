@@ -3,7 +3,8 @@
 import { makeFunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
+import type { QuerySpec } from "./planner.js";
 import * as publicFunctions from "./public.js";
 import { initConvexTest } from "./setup.test.js";
 
@@ -17,6 +18,14 @@ const patchRecordWithoutIndexMaintenance = makeFunctionReference<
   },
   null
 >("faults.test:patchRecordWithoutIndexMaintenance");
+const deleteRecordWithoutIndexMaintenance = makeFunctionReference<
+  "mutation",
+  {
+    scopeId: string;
+    recordId: Id<"records">;
+  },
+  null
+>("faults.test:deleteRecordWithoutIndexMaintenance");
 
 describe("runtime tables component", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -1008,6 +1017,169 @@ describe("runtime tables component", () => {
     }
   });
 
+  test("matches an independent scan across 192 competing-index query plans", async () => {
+    const t = initConvexTest();
+    const testScope = "test-planner-differential";
+    const created = await createTransactionsTable(t, testScope);
+    for (let start = 0; start < 500; start += 100) {
+      await t.mutation(api.public.insertRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        records: Array.from({ length: 100 }, (_, offset) => ({
+          values: valuesFor(created.fieldIds, start + offset),
+        })),
+      });
+    }
+    for (const [name, fieldIds] of [
+      [
+        "accountDate",
+        [created.fieldIds.accountId!, created.fieldIds.bookingDate!],
+      ],
+      [
+        "accountAmount",
+        [created.fieldIds.accountId!, created.fieldIds.amountMinor!],
+      ],
+      [
+        "categoryDate",
+        [created.fieldIds.category!, created.fieldIds.bookingDate!],
+      ],
+      ["sourceRef", [created.fieldIds.sourceRef!]],
+    ] as const) {
+      await t.mutation(api.public.createIndex, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        name,
+        fieldIds: [...fieldIds],
+        unique: false,
+      });
+    }
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const records = await t.run(async (ctx) =>
+      ctx.db
+        .query("records")
+        .withIndex("by_scopeId_and_tableId", (q) =>
+          q.eq("scopeId", testScope).eq("tableId", created.tableId),
+        )
+        .take(501),
+    );
+    expect(records).toHaveLength(500);
+
+    const cases: QuerySpec[] = [];
+    const directions = ["asc", "desc"] as const;
+    const rangeOps = ["gte", "lte"] as const;
+    const dateThresholds = [0, 70, 140, 210, 280, 350, 420, 490];
+    for (const account of ["account-1", "account-2", "account-3"]) {
+      for (const threshold of dateThresholds) {
+        for (const op of rangeOps) {
+          for (const direction of directions) {
+            cases.push({
+              where: [
+                {
+                  fieldId: created.fieldIds.accountId!,
+                  op: "eq",
+                  value: account,
+                },
+                {
+                  fieldId: created.fieldIds.bookingDate!,
+                  op,
+                  value: 1_700_000_000_000 + threshold * 86_400_000,
+                },
+              ],
+              orderBy: {
+                fieldIds: [created.fieldIds.bookingDate!],
+                direction,
+              },
+            });
+          }
+        }
+      }
+    }
+    for (const account of ["account-1", "account-2", "account-3"]) {
+      for (const threshold of [50, 175, 300, 425]) {
+        for (const op of rangeOps) {
+          for (const direction of directions) {
+            cases.push({
+              where: [
+                {
+                  fieldId: created.fieldIds.accountId!,
+                  op: "eq",
+                  value: account,
+                },
+                {
+                  fieldId: created.fieldIds.amountMinor!,
+                  op,
+                  value: threshold * 101,
+                },
+              ],
+              orderBy: {
+                fieldIds: [created.fieldIds.amountMinor!],
+                direction,
+              },
+            });
+          }
+        }
+      }
+    }
+    for (const category of ["food", "travel"]) {
+      for (const threshold of [50, 175, 300, 425]) {
+        for (const op of rangeOps) {
+          for (const direction of directions) {
+            cases.push({
+              where: [
+                {
+                  fieldId: created.fieldIds.category!,
+                  op: "eq",
+                  value: category,
+                },
+                {
+                  fieldId: created.fieldIds.bookingDate!,
+                  op,
+                  value: 1_700_000_000_000 + threshold * 86_400_000,
+                },
+              ],
+              orderBy: {
+                fieldIds: [created.fieldIds.bookingDate!],
+                direction,
+              },
+            });
+          }
+        }
+      }
+    }
+    for (let source = 0; source < 16; source += 1) {
+      cases.push({
+        where: [
+          {
+            fieldId: created.fieldIds.sourceRef!,
+            op: "eq",
+            value: `source-${source * 31}`,
+          },
+        ],
+      });
+    }
+    expect(cases).toHaveLength(192);
+
+    for (const query of cases) {
+      const expected = bruteForceQuery(records, query).map(
+        (record) => record._id,
+      );
+      const actual: Id<"records">[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await t.query(api.public.queryRecords, {
+          scopeId: testScope,
+          tableId: created.tableId,
+          query,
+          pagination: { pageSize: 100, cursor },
+        });
+        expect(page.plan.kind).toBe("index");
+        actual.push(...page.page.map((record) => record._id));
+        cursor = page.continueCursor ?? undefined;
+      } while (cursor);
+      expect(actual).toEqual(expected);
+    }
+  }, 120_000);
+
   test.each(
     ["pageSize", "maximumRowsRead", "maximumBytesRead"].flatMap((field) =>
       [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5].map(
@@ -1496,10 +1668,13 @@ describe("runtime tables component", () => {
     const t = initConvexTest();
     const testScope = "test-fault-injection";
     const created = await createTransactionsTable(t, testScope);
-    const [written] = await t.mutation(api.public.insertRecords, {
+    const written = await t.mutation(api.public.insertRecords, {
       scopeId: testScope,
       tableId: created.tableId,
-      records: [{ values: valuesFor(created.fieldIds, 1) }],
+      records: [
+        { values: valuesFor(created.fieldIds, 1) },
+        { values: valuesFor(created.fieldIds, 2) },
+      ],
     });
     const { indexId } = await t.mutation(api.public.createIndex, {
       scopeId: testScope,
@@ -1527,7 +1702,7 @@ describe("runtime tables component", () => {
     expect(before.page).toHaveLength(1);
     await t.mutation(patchRecordWithoutIndexMaintenance, {
       scopeId: testScope,
-      recordId: written!.recordId,
+      recordId: written[0]!.recordId,
       values: {
         ...valuesFor(created.fieldIds, 1),
         [created.fieldIds.sourceRef!]: "writer-path-was-skipped",
@@ -1545,7 +1720,7 @@ describe("runtime tables component", () => {
           {
             fieldId: created.fieldIds.sourceRef!,
             op: "eq",
-            value: "source-1",
+            value: "source-2",
           },
         ],
       },
@@ -1578,7 +1753,211 @@ describe("runtime tables component", () => {
       pagination: { pageSize: 10 },
     });
     expect(after.plan.kind).toBe("scan");
-    expect(after.page.map((record) => record._id)).toEqual([written!.recordId]);
+    expect(after.page.map((record) => record._id)).toEqual([
+      written[0]!.recordId,
+    ]);
+  });
+
+  test("indexed reads fail closed on stale and orphaned sidecars", async () => {
+    const t = initConvexTest();
+    const testScope = "test-index-read-drift";
+    const created = await createTransactionsTable(t, testScope);
+    const written = await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [
+        { values: valuesFor(created.fieldIds, 1) },
+        { values: valuesFor(created.fieldIds, 2) },
+      ],
+    });
+    const { indexId } = await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRef",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
+      scopeId: testScope,
+      recordId: written[0]!.recordId,
+      values: {
+        ...valuesFor(created.fieldIds, 1),
+        [created.fieldIds.merchant!]: "Skipped sidecar update",
+      },
+    });
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        query: {
+          where: [
+            {
+              fieldId: created.fieldIds.sourceRef!,
+              op: "eq",
+              value: "source-1",
+            },
+          ],
+        },
+        pagination: { pageSize: 10 },
+      }),
+    ).rejects.toThrow(/INDEX_NOT_READY|stale sidecar/);
+
+    await t.mutation(deleteRecordWithoutIndexMaintenance, {
+      scopeId: testScope,
+      recordId: written[1]!.recordId,
+    });
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        query: {
+          where: [
+            {
+              fieldId: created.fieldIds.sourceRef!,
+              op: "eq",
+              value: "source-2",
+            },
+          ],
+        },
+        pagination: { pageSize: 10 },
+      }),
+    ).rejects.toThrow(/INDEX_NOT_READY|orphaned sidecar/);
+
+    const index = await t.run(async (ctx) =>
+      ctx.db.get("indexDefinitions", indexId),
+    );
+    expect(index?.state).toBe("ready");
+  });
+
+  test("a formerly ready unique index blocks writes until repaired", async () => {
+    const t = initConvexTest();
+    const testScope = "test-unique-fail-closed";
+    const created = await createTransactionsTable(t, testScope);
+    const [first] = await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [{ values: valuesFor(created.fieldIds, 1) }],
+    });
+    const { indexId } = await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRefUnique",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: true,
+    });
+
+    // A unique index that has never been ready must not block population.
+    await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [{ values: valuesFor(created.fieldIds, 2) }],
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    expect(
+      (
+        await t.query(api.public.getTable, {
+          scopeId: testScope,
+          tableId: created.tableId,
+        })
+      ).indexes.find((index) => index._id === indexId),
+    ).toMatchObject({
+      state: "ready",
+      uniqueEnforcementActivated: true,
+    });
+
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
+      scopeId: testScope,
+      recordId: first!.recordId,
+      values: {
+        ...valuesFor(created.fieldIds, 1),
+        [created.fieldIds.merchant!]: "Skipped unique sidecar update",
+      },
+    });
+    const verification = await t.mutation(api.public.verifyIndex, {
+      scopeId: testScope,
+      indexId,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    expect(
+      await t.query(api.public.getJob, {
+        scopeId: testScope,
+        jobId: verification.jobId,
+      }),
+    ).toMatchObject({ state: "failed" });
+
+    const beforeRejectedWrites = await t.run(async (ctx) => ({
+      records: await ctx.db
+        .query("records")
+        .withIndex("by_scopeId_and_tableId", (q) =>
+          q.eq("scopeId", testScope).eq("tableId", created.tableId),
+        )
+        .take(10),
+      entries: await ctx.db
+        .query("indexEntries")
+        .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
+          q.eq("scopeId", testScope).eq("indexId", indexId),
+        )
+        .take(10),
+    }));
+    await expect(
+      t.mutation(api.public.insertRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        records: [{ values: valuesFor(created.fieldIds, 3) }],
+      }),
+    ).rejects.toThrow(/INDEX_NOT_READY|writes are blocked/);
+    await expect(
+      t.mutation(api.public.insertRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        records: [
+          {
+            values: {
+              ...valuesFor(created.fieldIds, 4),
+              [created.fieldIds.sourceRef!]: "source-1",
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/INDEX_NOT_READY|writes are blocked/);
+    const afterRejectedWrites = await t.run(async (ctx) => ({
+      records: await ctx.db
+        .query("records")
+        .withIndex("by_scopeId_and_tableId", (q) =>
+          q.eq("scopeId", testScope).eq("tableId", created.tableId),
+        )
+        .take(10),
+      entries: await ctx.db
+        .query("indexEntries")
+        .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
+          q.eq("scopeId", testScope).eq("indexId", indexId),
+        )
+        .take(10),
+    }));
+    expect(afterRejectedWrites).toEqual(beforeRejectedWrites);
+
+    await t.mutation(api.public.repairIndex, { scopeId: testScope, indexId });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    expect(
+      (
+        await t.query(api.public.getTable, {
+          scopeId: testScope,
+          tableId: created.tableId,
+        })
+      ).indexes.find((index) => index._id === indexId),
+    ).toMatchObject({
+      state: "ready",
+      uniqueEnforcementActivated: true,
+    });
+    await expect(
+      t.mutation(api.public.insertRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        records: [{ values: valuesFor(created.fieldIds, 3) }],
+      }),
+    ).resolves.toHaveLength(1);
   });
 
   test("a failed verified index cannot remain authoritative for a large table", async () => {
@@ -1733,6 +2112,97 @@ describe("runtime tables component", () => {
     ).toMatchObject({ state: "failed", maintenanceState: "failed" });
   });
 
+  test("a stalled verification leaves a ready index serving and can restart", async () => {
+    const t = initConvexTest();
+    const testScope = "test-stalled-ready-verification";
+    const created = await createTransactionsTable(t, testScope);
+    await t.mutation(api.public.insertRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      records: [{ values: valuesFor(created.fieldIds, 1) }],
+    });
+    const built = await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRef",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const now = Date.now();
+    const stalled = await t.run(async (ctx) => {
+      const index = (await ctx.db.get("indexDefinitions", built.indexId))!;
+      const generation = (index.generation ?? 0) + 1;
+      const jobId = await ctx.db.insert("jobs", {
+        scopeId: testScope,
+        kind: "verifyIndex",
+        targetId: index._id,
+        state: "running",
+        phase: "verifyRecords",
+        cursor: null,
+        progress: 0,
+        generation,
+        batchCount: 1,
+        retryCount: 0,
+        lastError: null,
+        createdAt: now - 600_000,
+        updatedAt: now - 600_000,
+      });
+      await ctx.db.patch("indexDefinitions", index._id, {
+        generation,
+        activeJobId: jobId,
+        maintenanceState: "verifying",
+        updatedAt: now - 600_000,
+      });
+      return { jobId, generation };
+    });
+    await t.mutation(internal.maintenance.cleanupExpired, {});
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    expect(
+      await t.query(api.public.getJob, {
+        scopeId: testScope,
+        jobId: stalled.jobId,
+      }),
+    ).toMatchObject({
+      state: "failed",
+      lastError: { code: "JOB_STALLED" },
+    });
+    expect(
+      (
+        await t.query(api.public.getTable, {
+          scopeId: testScope,
+          tableId: created.tableId,
+        })
+      ).indexes.find((index) => index._id === built.indexId),
+    ).toMatchObject({ state: "ready", maintenanceState: "failed" });
+
+    const restarted = await t.mutation(api.public.verifyIndex, {
+      scopeId: testScope,
+      indexId: built.indexId,
+    });
+    expect(restarted.jobId).not.toBe(stalled.jobId);
+    const restartedJob = await t.query(api.public.getJob, {
+      scopeId: testScope,
+      jobId: restarted.jobId,
+    });
+    expect(restartedJob?.generation).toBeGreaterThan(stalled.generation);
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    expect(
+      await t.query(api.public.getJob, {
+        scopeId: testScope,
+        jobId: restarted.jobId,
+      }),
+    ).toMatchObject({ state: "succeeded" });
+    expect(
+      (
+        await t.query(api.public.getTable, {
+          scopeId: testScope,
+          tableId: created.tableId,
+        })
+      ).indexes.find((index) => index._id === built.indexId),
+    ).toMatchObject({ state: "ready", maintenanceState: "idle" });
+  });
+
   test("reschedules stalled-job cleanup when one state exceeds the sweep cap", async () => {
     const t = initConvexTest();
     const created = await createTransactionsTable(t, "test-stalled-cap");
@@ -1877,4 +2347,48 @@ function valuesFor(fieldIds: Record<string, Id<"fields">>, index: number) {
     [fieldIds.category!]: index % 2 === 0 ? "food" : "travel",
     [fieldIds.sourceRef!]: `source-${index}`,
   };
+}
+
+function bruteForceQuery(
+  records: Doc<"records">[],
+  query: QuerySpec,
+): Doc<"records">[] {
+  const matches = records.filter((record) =>
+    query.where.every((predicate) => {
+      const comparison = compareTestScalars(
+        record.values[predicate.fieldId],
+        predicate.value,
+      );
+      if (predicate.op === "eq") return comparison === 0;
+      if (predicate.op === "lt") return comparison < 0;
+      if (predicate.op === "lte") return comparison <= 0;
+      if (predicate.op === "gt") return comparison > 0;
+      return comparison >= 0;
+    }),
+  );
+  if (!query.orderBy) return matches;
+  const multiplier = query.orderBy.direction === "asc" ? 1 : -1;
+  return matches.sort((left, right) => {
+    for (const fieldId of query.orderBy!.fieldIds) {
+      const comparison = compareTestScalars(
+        left.values[fieldId],
+        right.values[fieldId],
+      );
+      if (comparison !== 0) return comparison * multiplier;
+    }
+    return 0;
+  });
+}
+
+function compareTestScalars(left: unknown, right: unknown): number {
+  if (Object.is(left, right)) return 0;
+  if (typeof left === "number" && typeof right === "number")
+    return left < right ? -1 : 1;
+  if (typeof left === "string" && typeof right === "string")
+    return left < right ? -1 : 1;
+  if (typeof left === "boolean" && typeof right === "boolean")
+    return left ? 1 : -1;
+  if (left === null || left === undefined) return -1;
+  if (right === null || right === undefined) return 1;
+  throw new Error("Differential test compared unlike scalar types");
 }

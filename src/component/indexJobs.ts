@@ -479,6 +479,11 @@ async function verifyEntries(
       state: "failed",
       maintenanceState: "failed",
       activeJobId: undefined,
+      uniqueEnforcementActivated:
+        index.unique &&
+        (index.uniqueEnforcementActivated === true || index.state === "ready")
+          ? true
+          : index.uniqueEnforcementActivated,
       verification,
       failure: {
         code,
@@ -501,6 +506,9 @@ async function verifyEntries(
     state: "ready",
     maintenanceState: "idle",
     activeJobId: undefined,
+    uniqueEnforcementActivated: index.unique
+      ? true
+      : index.uniqueEnforcementActivated,
     verification,
     failure: null,
     updatedAt: checkedAt,

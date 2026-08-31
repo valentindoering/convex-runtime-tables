@@ -11,7 +11,7 @@ or regrouping it.
 | R3   | An insert after the first backfill batch is indexed. New records cannot sort behind this structural cursor because the scope/table index's implicit creation-time/ID suffix is monotonic.                   | `src/component/lifecycle.race.test.ts` — `R3 insert after the backfill cursor is indexed`; 205 initial rows, 20 repetitions, exact oracle.                                                                                              |
 | R4   | Mid-build repair supersedes the old generation; only the new job can set ready.                                                                                                                             | `src/component/lifecycle.race.test.ts` — `R4 repair mid-backfill supersedes the old generation`; 205 rows, 20 repetitions, exact oracle.                                                                                                |
 | R5   | A stale batch from create → delete → create cannot write under the dead index ID.                                                                                                                           | `src/component/lifecycle.race.test.ts` — `R5 create delete create leaves no entries under the dead index`; explicitly invokes the stale generation, 20 repetitions, exact oracle.                                                       |
-| R6   | Table deletion during backfill removes records, entries, fields, and metadata.                                                                                                                              | `src/component/lifecycle.race.test.ts` — `R6 table deletion during backfill purges all residue`; 205 rows, 20 repetitions.                                                                                                              |
+| R6   | Table deletion during backfill immediately fences the child generation/job, supersedes its stale callback, and removes all records, entries, fields, and metadata.                                          | `src/component/lifecycle.race.test.ts` — `R6 table deletion during backfill purges all residue`; 205 rows, explicit stale callback, zero dead-index entries/definitions, 20 repetitions.                                                |
 | R7   | Two independent clients racing a unique insert produce one success, one `UNIQUE_CONFLICT`, and one logical row.                                                                                             | `scripts/real-concurrency.mjs`; anonymous local Convex backend, 20 repetitions, independent oracle after each repetition.                                                                                                               |
 | R8   | Two independent clients using the same idempotent batch receive identical IDs; changed payload returns `IDEMPOTENCY_MISMATCH`.                                                                              | `scripts/real-concurrency.mjs`; 20 repetitions, independent oracle after each repetition.                                                                                                                                               |
 | R9   | Two independent clients patching one `expectedRev` produce one winner and one bounded structured `CONFLICT`.                                                                                                | `scripts/real-concurrency.mjs`; 20 repetitions, independent oracle after each repetition.                                                                                                                                               |
@@ -33,3 +33,16 @@ Additional unnumbered gates cover multi-range rejection, achievable index
 suggestions, large unfiltered structural pagination, nested agent JSON Schema,
 malformed/adversarial agent requests, formatting, lint, typecheck, coverage,
 build, and generated-file freshness.
+
+Focused release-blocker regressions are
+`indexed reads fail closed on stale and orphaned sidecars` and
+`a formerly ready unique index blocks writes until repaired` in
+`src/component/runtimeTables.test.ts`. The latter also proves that a never-ready
+unique build does not block initial population and that rejected outage writes
+leave no partial record or sidecar state.
+`a stalled verification leaves a ready index serving and can restart` proves the
+stalled-job sweep preserves serving state, fails maintenance observably, and
+permits a newer verification generation.
+`matches an independent scan across 192 competing-index query plans`
+differentially checks filtered planner pagination against an independent record
+scan and sort over 500 records.

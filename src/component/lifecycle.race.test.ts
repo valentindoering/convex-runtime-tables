@@ -146,12 +146,37 @@ describe("forced lifecycle and write races", () => {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r6-${run}`);
       await insertRange(t, fixture, 205);
-      await createIndex(t, fixture, false);
+      const build = await createIndex(t, fixture, false);
       await step(t);
+      const childJob = await t.query(api.public.getJob, {
+        scopeId: fixture.scopeId,
+        jobId: build.jobId,
+      });
+      expect(childJob).not.toBeNull();
       const deleted = await t.mutation(api.public.deleteTable, {
         scopeId: fixture.scopeId,
         tableId: fixture.tableId,
       });
+      const fencedIndex = await t.run(async (ctx) =>
+        ctx.db.get("indexDefinitions", build.indexId),
+      );
+      expect(fencedIndex).toMatchObject({
+        state: "deleting",
+        maintenanceState: "deleting",
+      });
+      expect(fencedIndex?.activeJobId).toBeUndefined();
+      expect(fencedIndex?.generation).toBeGreaterThan(childJob!.generation!);
+      await t.mutation(internal.indexJobs.runIndexBatch, {
+        jobId: build.jobId,
+        generation: childJob!.generation!,
+        phase: childJob!.phase,
+      });
+      expect(
+        await t.query(api.public.getJob, {
+          scopeId: fixture.scopeId,
+          jobId: build.jobId,
+        }),
+      ).toMatchObject({ state: "superseded" });
       await drain(t);
       expect(
         await t.query(api.public.getJob, {
@@ -168,13 +193,29 @@ describe("forced lifecycle and write races", () => {
           .take(1),
         entries: await ctx.db
           .query("indexEntries")
-          .withIndex("by_scopeId_and_recordId_and_indexId", (q) =>
-            q.eq("scopeId", fixture.scopeId),
+          .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
+            q.eq("scopeId", fixture.scopeId).eq("indexId", build.indexId),
           )
           .take(1),
+        indexes: await Promise.all(
+          (
+            ["building", "verifying", "ready", "failed", "deleting"] as const
+          ).map((state) =>
+            ctx.db
+              .query("indexDefinitions")
+              .withIndex("by_scopeId_and_tableId_and_state", (q) =>
+                q
+                  .eq("scopeId", fixture.scopeId)
+                  .eq("tableId", fixture.tableId)
+                  .eq("state", state),
+              )
+              .take(1),
+          ),
+        ),
       }));
       expect(residue.records).toHaveLength(0);
       expect(residue.entries).toHaveLength(0);
+      expect(residue.indexes.flat()).toHaveLength(0);
     }
   }, 120_000);
 

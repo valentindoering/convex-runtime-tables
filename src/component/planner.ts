@@ -384,13 +384,44 @@ async function indexedPage(
   const hydrated = await Promise.all(
     result.page.map((entry) => ctx.db.get("records", entry.recordId)),
   );
-  const page = hydrated.filter(
-    (record): record is Doc<"records"> =>
-      record !== null &&
-      record.scopeId === scopeId &&
-      record.tableId === tableId &&
-      matchesAll(record, query.where),
-  );
+  const hydratedEntries = result.page.map((entry, position) => ({
+    entry,
+    record: hydrated[position] ?? null,
+  }));
+  for (const { entry, record } of hydratedEntries) {
+    if (!record) {
+      fail(
+        "INDEX_NOT_READY",
+        "Runtime index contains an orphaned sidecar entry",
+        {
+          indexId: selected.definition._id,
+          recordId: entry.recordId,
+          reason: "orphaned_record",
+        },
+      );
+    }
+    if (record.scopeId !== scopeId || record.tableId !== tableId) {
+      fail(
+        "INDEX_NOT_READY",
+        "Runtime index sidecar points outside its table",
+        {
+          indexId: selected.definition._id,
+          recordId: entry.recordId,
+          reason: "record_scope_mismatch",
+        },
+      );
+    }
+    if (entry.recordRev !== record.rev) {
+      fail("INDEX_NOT_READY", "Runtime index contains a stale sidecar entry", {
+        indexId: selected.definition._id,
+        recordId: entry.recordId,
+        reason: "record_revision_mismatch",
+      });
+    }
+  }
+  const page = hydratedEntries
+    .map(({ record }) => record as Doc<"records">)
+    .filter((record) => matchesAll(record, query.where));
   return {
     page,
     isDone: result.isDone,

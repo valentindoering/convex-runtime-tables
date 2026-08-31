@@ -56,16 +56,31 @@ counts plus ten IDs per category. Any mismatch fails the build. A ready index
 remains queryable during an operator-requested verification because serving
 state and maintenance state are separate.
 
+Every indexed read zips each sidecar entry with its hydrated record before
+applying legitimate residual predicates. A missing record, scope/table mismatch,
+or record-revision mismatch returns `INDEX_NOT_READY`; the query never hides
+structural drift as a short page. Queries remain read-only, so verification and
+repair own the lifecycle transition.
+
 Unique enforcement is intentionally conservative during lifecycle work. A
 building index does not reject ordinary writes; repair and read-only
 verification must prove that its complete key set is unique before it becomes
-ready. A failed index is neither selected by the planner nor used to enforce
-uniqueness. Existing ready indexes continue enforcing non-null keys while an
-operator verification runs.
+ready. Its first successful verification permanently activates unique
+enforcement. If that formerly-ready index later fails verification, inserts,
+patches, and upserts on the table fail with `INDEX_NOT_READY` until repair and
+verification restore it. This table-wide fail-closed policy prevents duplicate
+authoritative writes during the outage. Existing ready indexes continue
+enforcing non-null keys while an operator verification runs. Record deletion
+remains available because it cannot introduce a duplicate. Operators can repair
+after deleting conflicting records, or drop the index to remove the constraint
+and resume writes.
 
 Index and table deletion first changes visible state so planners and writers
-stop selecting the resource. Workers then delete bounded batches and finally
-remove metadata. No worker relies on process memory.
+stop selecting the resource. Table deletion atomically increments every child
+index generation, clears its active job, and moves it to deleting before the
+purge is scheduled. Stale child callbacks therefore supersede without another
+sidecar write. Workers then delete bounded batches and finally remove metadata.
+No worker relies on process memory.
 
 ## Limits
 

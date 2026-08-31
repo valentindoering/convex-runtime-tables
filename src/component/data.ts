@@ -79,6 +79,16 @@ export async function upsertIndexEntry(
   enforceUnique = true,
   repairDuplicates = false,
 ): Promise<void> {
+  const uniqueEnforcementActivated =
+    index.unique &&
+    (index.uniqueEnforcementActivated === true || index.state === "ready");
+  if (enforceUnique && uniqueEnforcementActivated && index.state !== "ready") {
+    fail(
+      "INDEX_NOT_READY",
+      `Unique index ${index.name} is unavailable; writes are blocked until repair and verification complete`,
+      { indexId: index._id, state: index.state },
+    );
+  }
   const [k0, k1, k2] = normalizeIndexSlots(
     index.fieldIds,
     record.values as Record<string, Scalar>,
@@ -110,8 +120,7 @@ export async function upsertIndexEntry(
   );
   if (
     enforceUnique &&
-    index.unique &&
-    index.state === "ready" &&
+    uniqueEnforcementActivated &&
     ![k0, k1, k2].slice(0, index.fieldIds.length).includes(null)
   ) {
     const collisions = await ctx.db

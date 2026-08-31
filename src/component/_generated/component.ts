@@ -199,6 +199,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
+            uniqueEnforcementActivated?: boolean;
             updatedAt: number;
             verification?: {
               checkedAt: number;
@@ -398,6 +399,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
+            uniqueEnforcementActivated?: boolean;
             updatedAt: number;
             verification?: {
               checkedAt: number;
@@ -644,6 +646,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             state: "building" | "verifying" | "ready" | "failed" | "deleting";
             tableId: string;
             unique: boolean;
+            uniqueEnforcementActivated?: boolean;
             updatedAt: number;
             verification?: {
               checkedAt: number;

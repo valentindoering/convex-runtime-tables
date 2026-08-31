@@ -55,6 +55,9 @@ export default defineSchema({
     name: v.string(),
     fieldIds: v.array(v.id("fields")),
     unique: v.boolean(),
+    // Monotonic once a unique index has first reached ready. Optional for
+    // alpha-schema compatibility; lifecycle code never clears a true value.
+    uniqueEnforcementActivated: v.optional(v.boolean()),
     state: indexStateValidator,
     maintenanceState: v.optional(maintenanceStateValidator),
     generation: v.optional(v.number()),

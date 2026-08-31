@@ -803,6 +803,7 @@ export const createIndex = mutation({
       name: args.name,
       fieldIds: args.fieldIds,
       unique: args.unique,
+      uniqueEnforcementActivated: false,
       state: "building",
       maintenanceState: "backfilling",
       generation: 1,
@@ -967,6 +968,16 @@ export const deleteTable = mutation({
       schemaRev: table.schemaRev + 1,
       updatedAt: Date.now(),
     });
+    const indexes = await loadAllIndexes(ctx, args.scopeId, table._id);
+    for (const index of indexes) {
+      await ctx.db.patch("indexDefinitions", index._id, {
+        state: "deleting",
+        maintenanceState: "deleting",
+        generation: (index.generation ?? 0) + 1,
+        activeJobId: undefined,
+        updatedAt: Date.now(),
+      });
+    }
     await scheduleJob(ctx, jobId, "deleteTable", generation, "deleteEntries");
     return { jobId };
   },

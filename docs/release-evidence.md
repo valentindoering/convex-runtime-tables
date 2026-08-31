@@ -6,11 +6,12 @@ revision, so this document does not claim release readiness.
 
 ## Local deterministic gates
 
-- `npm test`: 88 tests across 8 files passed with no type errors.
-- `npm run test:coverage`: 88 tests passed in 47.64 seconds. Overall coverage is
-  87.91% statements, 73.67% branches, 93.22% functions, and 90.28% lines.
-  Critical-file branch coverage is planner 65.23%, index data 81.81%, and
-  lifecycle jobs 79.20%.
+- `npm test`: 92 tests across 8 files passed in 14.44 seconds with no type
+  errors.
+- `npm run test:coverage`: 92 tests passed in 46.61 seconds. Overall coverage is
+  88.41% statements, 75.07% branches, 93.24% functions, and 90.70% lines.
+  Critical-file branch coverage is planner 69.03%, index data 86.20%, and
+  lifecycle jobs 80.86%.
 - `npm run test:real-concurrency`: an anonymous local Convex backend passed 20
   two-client repetitions each for delete versus backfill, unique insertion,
   idempotent insertion, and expected-revision patching. R1 used 1,000 rows and
@@ -22,14 +23,19 @@ revision, so this document does not claim release readiness.
   mounted the component, code-generated twice without drift, executed a mutation
   and query, and delivered a `ConvexClient.onUpdate` callback from a second
   client. The result was `mutation=ok`, `queryCount=1`, `reactiveCount=2`, and
-  `codegenFresh=true`. The tarball contained 104 files and was 103.4 kB
-  compressed / 646.3 kB unpacked. Its inspected contents had no test module or
+  `codegenFresh=true`. The tarball contained 104 files and was 104.8 kB
+  compressed / 653.6 kB unpacked. Its inspected contents had no test module or
   fault-injection hook.
+- Focused hardening regressions prove stale/orphaned indexed reads return
+  `INDEX_NOT_READY`, formerly-ready unique indexes block writes without partial
+  state until repair, stalled ready-index verification can restart, and 192
+  deterministic competing-index plans match an independent scan/sort.
 - `SCALE_ROW_COUNT=1000 npm run test:scale`: the revised harness passed its
   exact known-survivor assertion, two independent raw-sidecar oracles, both
   indexes in both directions, selected-index checks on every page, and table
-  purge with zero remaining tables. It completed in 2,685 ms with 990 expected
-  survivors and 1,980 sidecar entries.
+  purge with zero remaining tables. It completed in 14,585 ms with 990 expected
+  survivors and 1,980 sidecar entries. Both build jobs succeeded in 24 batches
+  with zero retries, mismatches, or terminal failures.
 - The clean-worktree CI bootstrap (`convex dev --once`, component codegen, and
   generated-file diff) passed without a pre-existing `.env.local`.
 - `npm run format`, `npm run lint`, `npm run typecheck`, and `npm run build`
@@ -85,12 +91,16 @@ gate passes.
 - Same-transaction backfill read and entry write:
   `src/component/indexJobs.ts:220-233`.
 - Payload-hashed idempotency tuple: `src/component/normalization.ts:63`,
-  `src/component/public.ts:548`, `src/component/public.ts:1164-1208`, and
-  `src/component/schema.ts:117`.
+  `src/component/public.ts:548`, `src/component/public.ts:1169-1213`, and
+  `src/component/schema.ts:120`.
 - Ready-only planner selection: `src/component/planner.ts:113` and
   `src/component/planner.ts:160`.
+- Indexed read drift containment: `src/component/planner.ts:384-424`.
+- Post-ready unique enforcement: `src/component/data.ts:82-94` and
+  `src/component/indexJobs.ts:477-514`.
 - Read-only verification and fail-closed drift handling:
   `src/component/indexJobs.ts:344-504`.
-- Index/table lifecycle generation fences: `src/component/indexJobs.ts:566-600`.
+- Index/table lifecycle generation fences: `src/component/indexJobs.ts:574-608`.
+- Table-deletion child fences: `src/component/public.ts:943-983`.
 - Scope/resource-bound public pagination cursors:
-  `src/component/public.ts:984-1038`.
+  `src/component/public.ts:986-1048`.

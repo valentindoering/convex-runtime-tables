@@ -29,6 +29,22 @@ export const patchRecordWithoutIndexMaintenance = internalMutation({
   },
 });
 
+export const deleteRecordWithoutIndexMaintenance = internalMutation({
+  args: {
+    scopeId: v.string(),
+    recordId: v.id("records"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    requireTestScope(args.scopeId);
+    const record = await ctx.db.get("records", args.recordId);
+    if (!record || record.scopeId !== args.scopeId)
+      throw new Error("Record not found");
+    await ctx.db.delete("records", record._id);
+    return null;
+  },
+});
+
 export const insertOrphanedIndexEntry = internalMutation({
   args: {
     scopeId: v.string(),
