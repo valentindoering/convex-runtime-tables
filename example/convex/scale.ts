@@ -3,6 +3,7 @@ import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 
 const scope = (runId: string) => `scale-100k-${runId}`;
+const scalar = v.union(v.null(), v.boolean(), v.number(), v.string());
 
 export const initialize = mutation({
   args: { runId: v.string() },
@@ -150,6 +151,31 @@ export const deleteOne = mutation({
     }),
 });
 
+export const deleteTable = mutation({
+  args: { runId: v.string(), tableId: v.string() },
+  returns: v.object({ jobId: v.string() }),
+  handler: async (ctx, args) =>
+    await ctx.runMutation(components.runtimeTables.public.deleteTable, {
+      scopeId: scope(args.runId),
+      tableId: args.tableId,
+    }),
+});
+
+export const tableCount = query({
+  args: { runId: v.string() },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const result = await ctx.runQuery(
+      components.runtimeTables.public.listTables,
+      {
+        scopeId: scope(args.runId),
+        pagination: { pageSize: 100 },
+      },
+    );
+    return result.page.length;
+  },
+});
+
 export const getJob = query({
   args: { runId: v.string(), jobId: v.string() },
   returns: v.union(
@@ -189,7 +215,7 @@ export const page = query({
     runId: v.string(),
     tableId: v.string(),
     indexId: v.string(),
-    orderFieldId: v.string(),
+    orderFieldIds: v.array(v.string()),
     direction: v.union(v.literal("asc"), v.literal("desc")),
     cursor: v.optional(v.string()),
   },
@@ -197,8 +223,10 @@ export const page = query({
     ids: v.array(v.string()),
     seq: v.array(v.number()),
     revs: v.array(v.number()),
+    values: v.array(v.record(v.string(), scalar)),
     isDone: v.boolean(),
     continueCursor: v.union(v.null(), v.string()),
+    planIndexId: v.string(),
     bytesRead: v.number(),
     documentsRead: v.number(),
   }),
@@ -210,22 +238,93 @@ export const page = query({
         tableId: args.tableId,
         query: {
           where: [],
-          orderBy: { fieldIds: [args.orderFieldId], direction: args.direction },
+          orderBy: { fieldIds: args.orderFieldIds, direction: args.direction },
         },
         pagination: { pageSize: 100, cursor: args.cursor },
       },
     );
     const metrics = await ctx.meta.getTransactionMetrics();
+    if (result.plan.kind !== "index") {
+      throw new Error(`Expected an index plan, got ${result.plan.kind}`);
+    }
     return {
       ids: result.page.map((record) => record._id),
       seq: result.page.map((record) =>
-        Number(record.values[args.orderFieldId]),
+        Number(record.values[args.orderFieldIds.at(-1)!]),
       ),
       revs: result.page.map((record) => record.rev),
+      values: result.page.map((record) => record.values),
       isDone: result.isDone,
       continueCursor: result.continueCursor,
+      planIndexId: result.plan.indexId,
       bytesRead: metrics.bytesRead.used,
       documentsRead: metrics.documentsRead.used,
+    };
+  },
+});
+
+export const auditEntries = query({
+  args: {
+    runId: v.string(),
+    indexId: v.string(),
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        recordId: v.string(),
+        recordRev: v.number(),
+        k0: scalar,
+        k1: scalar,
+        k2: scalar,
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.null(), v.string()),
+  }),
+  handler: async (ctx, args) =>
+    await ctx.runQuery(components.runtimeTables.public.auditIndexEntries, {
+      scopeId: scope(args.runId),
+      indexId: args.indexId,
+      pagination: { pageSize: 100, cursor: args.cursor },
+    }),
+});
+
+export const recordsPage = query({
+  args: {
+    runId: v.string(),
+    tableId: v.string(),
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        recordId: v.string(),
+        rev: v.number(),
+        values: v.record(v.string(), scalar),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.null(), v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const result = await ctx.runQuery(
+      components.runtimeTables.public.queryRecords,
+      {
+        scopeId: scope(args.runId),
+        tableId: args.tableId,
+        query: { where: [] },
+        pagination: { pageSize: 100, cursor: args.cursor },
+      },
+    );
+    return {
+      page: result.page.map((record) => ({
+        recordId: record._id,
+        rev: record.rev,
+        values: record.values,
+      })),
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
     };
   },
 });

@@ -18,6 +18,9 @@ const temporary = await mkdtemp(
 );
 const consumer = join(temporary, "consumer");
 const packDirectory = join(temporary, "pack");
+const hostedGate =
+  process.env.CONVEX_HOSTED_GATE === "1" ||
+  Boolean(process.env.CONVEX_DEPLOY_KEY);
 let succeeded = false;
 let devProcess;
 const baseEnvironment = {
@@ -40,6 +43,7 @@ try {
   );
   if (!tarballName) throw new Error("npm pack did not produce a tarball");
   const tarball = join(packDirectory, tarballName);
+  await assertProductionTarball(tarball, temporary);
 
   await writeConsumerFiles(consumer);
   run(
@@ -59,12 +63,17 @@ try {
 
   const environment = {
     ...baseEnvironment,
-    CONVEX_AGENT_MODE: "anonymous",
     CONVEX_DISABLE_SENTRY: "1",
     NO_COLOR: "1",
+    ...(hostedGate ? {} : { CONVEX_AGENT_MODE: "anonymous" }),
   };
   const convexExecutable = join(consumer, "node_modules", ".bin", "convex");
-  devProcess = await startConvex(convexExecutable, consumer, environment);
+  devProcess = await startConvex(
+    convexExecutable,
+    consumer,
+    environment,
+    hostedGate,
+  );
   const generated = join(consumer, "convex", "_generated");
   const before = await directoryDigest(generated);
   run(convexExecutable, ["codegen"], consumer, environment);
@@ -74,8 +83,11 @@ try {
       "Generated Convex files drifted after a second codegen run",
     );
 
-  const envText = await readFile(join(consumer, ".env.local"), "utf8");
-  const deploymentUrl = envText.match(/^VITE_CONVEX_URL=(.+)$/m)?.[1]?.trim();
+  const deploymentUrl =
+    process.env.CONVEX_TEST_URL ??
+    (await readFile(join(consumer, ".env.local"), "utf8"))
+      .match(/^VITE_CONVEX_URL=(.+)$/m)?.[1]
+      ?.trim();
   if (!deploymentUrl) throw new Error("VITE_CONVEX_URL was not generated");
   const convexBrowser = await import(
     pathToFileURL(
@@ -151,9 +163,10 @@ try {
   else process.stderr.write(`Consumer workspace retained at ${temporary}\n`);
 }
 
-async function startConvex(executable, cwd, env) {
-  process.stdout.write(`$ ${executable} dev\n`);
-  const child = spawn(executable, ["dev"], {
+async function startConvex(executable, cwd, env, hosted) {
+  const args = hosted ? ["dev", "--once"] : ["dev"];
+  process.stdout.write(`$ ${executable} ${args.join(" ")}\n`);
+  const child = spawn(executable, args, {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -161,12 +174,12 @@ async function startConvex(executable, cwd, env) {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(
       () => reject(new Error("Convex dev startup timed out")),
-      45_000,
+      120_000,
     );
     const onData = (chunk) => {
       const output = chunk.toString();
       process.stdout.write(output);
-      if (output.includes("Convex functions ready")) {
+      if (!hosted && output.includes("Convex functions ready")) {
         clearTimeout(timeout);
         resolve();
       }
@@ -175,12 +188,14 @@ async function startConvex(executable, cwd, env) {
     child.stderr.on("data", onData);
     child.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(
-        new Error(`Convex dev exited before readiness with status ${code}`),
-      );
+      if (hosted && code === 0) resolve();
+      else
+        reject(
+          new Error(`Convex dev exited before readiness with status ${code}`),
+        );
     });
   });
-  return child;
+  return hosted ? undefined : child;
 }
 
 async function stopProcess(child) {
@@ -328,4 +343,40 @@ async function directoryDigest(directory) {
     hash.update(await readFile(join(directory, name)));
   }
   return hash.digest("hex");
+}
+
+async function assertProductionTarball(tarball, temporary) {
+  const unpacked = join(temporary, "unpacked");
+  await mkdir(unpacked, { recursive: true });
+  run("tar", ["-xzf", tarball, "-C", unpacked], repository, baseEnvironment);
+  const files = await recursiveFiles(unpacked);
+  const forbiddenFile = files.find(
+    (file) => file.includes(".test.") || /\/testing\.[^.]+$/.test(file),
+  );
+  if (forbiddenFile) {
+    throw new Error(
+      `Packed tarball contains a test-only module: ${forbiddenFile}`,
+    );
+  }
+  for (const file of files) {
+    const content = await readFile(file);
+    const text = content.toString("utf8");
+    if (
+      text.includes("patchRecordWithoutIndexMaintenance") ||
+      text.includes("insertOrphanedIndexEntry") ||
+      text.includes("faults.test")
+    ) {
+      throw new Error(`Packed tarball exposes a fault-injection hook: ${file}`);
+    }
+  }
+}
+
+async function recursiveFiles(directory) {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...(await recursiveFiles(path)));
+    else result.push(path);
+  }
+  return result;
 }

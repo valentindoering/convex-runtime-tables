@@ -60,8 +60,11 @@ action, then pass the authorized `scopeId` to
 ```sh
 npm install
 npm run dev
-npm run dev:frontend
 ```
+
+`npm run dev` starts the anonymous local Convex backend, the component build
+watcher, and Vite together. It prints one readiness line when both services are
+available at `http://127.0.0.1:5173/` and stops both on Ctrl-C.
 
 The example initializes a `transactions` runtime table, builds three indexes,
 seeds an idempotent dataset, and renders a reactive grid. Development uses an
@@ -74,6 +77,7 @@ npm run build:codegen
 npm run typecheck
 npm run lint
 npm test
+npm run test:race
 npm run test:coverage
 npm run test:consumer
 npm run build

@@ -110,7 +110,7 @@ export async function explain(
   ensureActiveTable(table);
   const fields = await validateQuery(ctx, scopeId, tableId, query);
   if (isDefaultTableQuery(query)) return { kind: "table", postFiltered: false };
-  const selected = await selectIndex(ctx, scopeId, tableId, query);
+  const selected = await selectIndex(ctx, scopeId, tableId, query, "ready");
   if (selected) {
     return {
       kind: "index",
@@ -125,6 +125,13 @@ export async function explain(
     )
     .take(SCAN_LIMIT + 1);
   if (rows.length <= SCAN_LIMIT) return { kind: "scan", postFiltered: false };
+  const failed = await selectIndex(ctx, scopeId, tableId, query, "failed");
+  if (failed) {
+    fail("INDEX_NOT_READY", "A matching runtime index failed verification", {
+      indexId: failed.definition._id,
+      state: "failed",
+    });
+  }
   const suggestion = suggestIndex(query, fields);
   if (!suggestion)
     fail("UNSUPPORTED_QUERY", "No runtime index can satisfy this query");
@@ -150,7 +157,7 @@ export async function queryRecords(
   if (isDefaultTableQuery(query)) {
     return await tablePage(ctx, scopeId, table, query, pagination);
   }
-  const selected = await selectIndex(ctx, scopeId, tableId, query);
+  const selected = await selectIndex(ctx, scopeId, tableId, query, "ready");
   if (selected)
     return await indexedPage(
       ctx,
@@ -161,6 +168,7 @@ export async function queryRecords(
       selected,
       table.schemaRev,
     );
+  const failed = await selectIndex(ctx, scopeId, tableId, query, "failed");
   return await scannedPage(
     ctx,
     scopeId,
@@ -169,6 +177,7 @@ export async function queryRecords(
     pagination,
     fields,
     table.schemaRev,
+    failed?.definition._id,
   );
 }
 
@@ -235,11 +244,12 @@ async function selectIndex(
   scopeId: string,
   tableId: Id<"tables">,
   query: QuerySpec,
+  state: Doc<"indexDefinitions">["state"],
 ): Promise<SelectedIndex | null> {
   const indexes = await ctx.db
     .query("indexDefinitions")
     .withIndex("by_scopeId_and_tableId_and_state", (q) =>
-      q.eq("scopeId", scopeId).eq("tableId", tableId).eq("state", "ready"),
+      q.eq("scopeId", scopeId).eq("tableId", tableId).eq("state", state),
     )
     .take(5);
   const equality = new Map<string, Scalar>();
@@ -360,13 +370,17 @@ async function indexedPage(
       )
     : null;
   const stream = buildEntryQuery(ctx, selected).order(direction);
-  const result = await stream.paginate({
-    numItems: pagination.pageSize,
-    cursor: cursor?.inner ?? null,
-    ...(endCursor ? { endCursor: endCursor.inner } : {}),
-    maximumRowsRead: pagination.maximumRowsRead ?? 500,
-    maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
-  });
+  const result = await paginateWithCursorGuard(
+    () =>
+      stream.paginate({
+        numItems: pagination.pageSize,
+        cursor: cursor?.inner ?? null,
+        ...(endCursor ? { endCursor: endCursor.inner } : {}),
+        maximumRowsRead: pagination.maximumRowsRead ?? 500,
+        maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
+      }),
+    pagination.cursor !== undefined || pagination.endCursor !== undefined,
+  );
   const hydrated = await Promise.all(
     result.page.map((entry) => ctx.db.get("records", entry.recordId)),
   );
@@ -438,19 +452,23 @@ async function tablePage(
         direction,
       )
     : null;
-  const result = await paginator(ctx.db, schema)
-    .query("records")
-    .withIndex("by_scopeId_and_tableId", (q) =>
-      q.eq("scopeId", scopeId).eq("tableId", table._id),
-    )
-    .order(direction)
-    .paginate({
-      numItems: pagination.pageSize,
-      cursor: cursor?.inner ?? null,
-      ...(endCursor ? { endCursor: endCursor.inner } : {}),
-      maximumRowsRead: pagination.maximumRowsRead ?? 500,
-      maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
-    });
+  const result = await paginateWithCursorGuard(
+    () =>
+      paginator(ctx.db, schema)
+        .query("records")
+        .withIndex("by_scopeId_and_tableId", (q) =>
+          q.eq("scopeId", scopeId).eq("tableId", table._id),
+        )
+        .order(direction)
+        .paginate({
+          numItems: pagination.pageSize,
+          cursor: cursor?.inner ?? null,
+          ...(endCursor ? { endCursor: endCursor.inner } : {}),
+          maximumRowsRead: pagination.maximumRowsRead ?? 500,
+          maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
+        }),
+    pagination.cursor !== undefined || pagination.endCursor !== undefined,
+  );
   return {
     page: result.page,
     isDone: result.isDone,
@@ -559,6 +577,7 @@ async function scannedPage(
   pagination: Pagination,
   fields: Doc<"fields">[],
   schemaRev: number,
+  failedIndexId?: Id<"indexDefinitions">,
 ) {
   const records = await ctx.db
     .query("records")
@@ -567,6 +586,12 @@ async function scannedPage(
     )
     .take(SCAN_LIMIT + 1);
   if (records.length > SCAN_LIMIT) {
+    if (failedIndexId) {
+      fail("INDEX_NOT_READY", "A matching runtime index failed verification", {
+        indexId: failedIndexId,
+        state: "failed",
+      });
+    }
     const suggestedIndex = suggestIndex(query, fields);
     if (!suggestedIndex) {
       fail("UNSUPPORTED_QUERY", "No runtime index can satisfy this query");
@@ -841,5 +866,23 @@ function validatePagination(pagination: Pagination): void {
       "INVALID_CURSOR",
       `endCursor exceeds ${MAX_CURSOR_BYTES} bytes`,
     );
+  }
+}
+
+async function paginateWithCursorGuard<Result>(
+  operation: () => Promise<Result>,
+  hasCursor: boolean,
+): Promise<Result> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      hasCursor &&
+      ((error instanceof Error && error.name === "SyntaxError") ||
+        /cursor/i.test(String(error)))
+    ) {
+      fail("INVALID_CURSOR", "Inner cursor is malformed");
+    }
+    throw error;
   }
 }

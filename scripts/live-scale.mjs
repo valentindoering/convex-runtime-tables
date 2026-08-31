@@ -5,17 +5,32 @@ import { pathToFileURL } from "node:url";
 
 const repository = new URL("../", import.meta.url).pathname;
 const JOB_TIMEOUT_MS = 150 * 60_000;
+const TOTAL_ROWS = Number(process.env.SCALE_ROW_COUNT ?? 100_000);
+if (
+  !Number.isInteger(TOTAL_ROWS) ||
+  TOTAL_ROWS < 200 ||
+  TOTAL_ROWS % 200 !== 0
+) {
+  throw new Error("SCALE_ROW_COUNT must be a positive multiple of 200");
+}
+const INITIAL_ROWS = TOTAL_ROWS / 2;
+const hostedGate =
+  process.env.CONVEX_HOSTED_GATE === "1" ||
+  Boolean(process.env.CONVEX_DEPLOY_KEY);
 const environment = {
   ...process.env,
-  CONVEX_AGENT_MODE: "anonymous",
   CONVEX_DISABLE_SENTRY: "1",
   NO_COLOR: "1",
+  ...(hostedGate ? {} : { CONVEX_AGENT_MODE: "anonymous" }),
 };
 let devProcess;
 let client;
 let applicationRetries = 0;
 let shuttingDown = false;
 let currentRunId;
+let fixture;
+let generatedApi;
+let cleanedUp = false;
 
 try {
   const build = spawnSync("npm", ["run", "build"], {
@@ -27,17 +42,18 @@ try {
   if (build.stderr) process.stderr.write(build.stderr);
   if (build.status !== 0)
     throw new Error(`Build failed with status ${build.status}`);
-  devProcess = await startConvex(repository, environment);
-  const envText = await readFile(
-    new URL("../.env.local", import.meta.url),
-    "utf8",
-  );
-  const deploymentUrl = envText.match(/^VITE_CONVEX_URL=(.+)$/m)?.[1]?.trim();
+  devProcess = await startConvex(repository, environment, hostedGate);
+  const deploymentUrl =
+    process.env.CONVEX_TEST_URL ??
+    (await readFile(new URL("../.env.local", import.meta.url), "utf8"))
+      .match(/^VITE_CONVEX_URL=(.+)$/m)?.[1]
+      ?.trim();
   if (!deploymentUrl) throw new Error("VITE_CONVEX_URL was not generated");
   const { ConvexClient } = await import("convex/browser");
   const { api } = await import(
     `${pathToFileURL(new URL("../example/convex/_generated/api.js", import.meta.url).pathname).href}?scale=${Date.now()}`
   );
+  generatedApi = api;
   client = new ConvexClient(deploymentUrl);
 
   const startedAt = performance.now();
@@ -45,10 +61,10 @@ try {
   process.stdout.write(`SCALE_PROGRESS runId=${runId}\n`);
   currentRunId = runId;
   const initialized = await client.mutation(api.scale.initialize, { runId });
-  const fixture = { ...initialized, runId };
+  fixture = { ...initialized, runId };
   const retainedIds = [];
-  await insertRange(api, fixture, 0, 50_000, retainedIds);
-  process.stdout.write("SCALE_PROGRESS imported=50000\n");
+  await insertRange(api, fixture, 0, INITIAL_ROWS, retainedIds);
+  process.stdout.write(`SCALE_PROGRESS imported=${INITIAL_ROWS}\n`);
 
   const seqBuild = await client.mutation(api.scale.createIndex, {
     runId,
@@ -64,11 +80,17 @@ try {
   });
 
   await Promise.all([
-    insertRange(api, fixture, 50_000, 50_000, retainedIds),
+    insertRange(
+      api,
+      fixture,
+      INITIAL_ROWS,
+      TOTAL_ROWS - INITIAL_ROWS,
+      retainedIds,
+    ),
     mutateDuringBuild(api, fixture, retainedIds),
   ]);
   process.stdout.write(
-    "SCALE_PROGRESS imported=100000 concurrent_writes=done\n",
+    `SCALE_PROGRESS imported=${TOTAL_ROWS} concurrent_writes=done\n`,
   );
   const buildJobs = await Promise.all([
     waitForJob(api, seqBuild.jobId),
@@ -80,68 +102,112 @@ try {
   }
   process.stdout.write("SCALE_PROGRESS builds=done\n");
 
-  const verifyStarts = await Promise.all([
-    client.mutation(api.scale.verifyIndex, {
-      runId,
-      indexId: seqBuild.indexId,
-    }),
-    client.mutation(api.scale.verifyIndex, {
-      runId,
-      indexId: groupBuild.indexId,
-    }),
+  const records = await readAllRecords(api, fixture);
+  assertExpectedRecords(records, fixture);
+  const [seqEntries, groupEntries] = await Promise.all([
+    readAllEntries(api, fixture, seqBuild.indexId, "bySeq"),
+    readAllEntries(api, fixture, groupBuild.indexId, "byGroupSeq"),
   ]);
-  const verifyJobs = await Promise.all(
-    verifyStarts.map((job) => waitForJob(api, job.jobId)),
+  assertOracle(records, seqEntries, [fixture.seqId], "bySeq");
+  assertOracle(
+    records,
+    groupEntries,
+    [fixture.groupId, fixture.seqId],
+    "byGroupSeq",
   );
-  for (const job of verifyJobs) {
-    if (job.state !== "succeeded" || job.verificationMismatchCount !== 0) {
-      throw new Error(`Read-only oracle failed: ${JSON.stringify(job)}`);
-    }
-  }
-  process.stdout.write("SCALE_PROGRESS oracle=exact\n");
+  process.stdout.write("SCALE_PROGRESS independent_oracle=exact\n");
 
-  const asc = await traverse(api, fixture, seqBuild.indexId, "asc");
-  const desc = await traverse(api, fixture, seqBuild.indexId, "desc");
-  const reversed = [...asc.ids].reverse();
-  if (JSON.stringify(desc.ids) !== JSON.stringify(reversed)) {
-    throw new Error(
-      "Ascending and descending traversals are not exact reverses",
-    );
+  const [seqAsc, seqDesc, groupAsc, groupDesc] = await Promise.all([
+    traverse(api, fixture, seqBuild.indexId, [fixture.seqId], "asc", "bySeq"),
+    traverse(api, fixture, seqBuild.indexId, [fixture.seqId], "desc", "bySeq"),
+    traverse(
+      api,
+      fixture,
+      groupBuild.indexId,
+      [fixture.groupId, fixture.seqId],
+      "asc",
+      "byGroupSeq",
+    ),
+    traverse(
+      api,
+      fixture,
+      groupBuild.indexId,
+      [fixture.groupId, fixture.seqId],
+      "desc",
+      "byGroupSeq",
+    ),
+  ]);
+  assertTraversal(records, seqAsc, seqDesc, [fixture.seqId], "bySeq");
+  assertTraversal(
+    records,
+    groupAsc,
+    groupDesc,
+    [fixture.groupId, fixture.seqId],
+    "byGroupSeq",
+  );
+
+  const cleanupJob = await client.mutation(api.scale.deleteTable, {
+    runId,
+    tableId: fixture.tableId,
+  });
+  const cleanup = await waitForJob(api, cleanupJob.jobId);
+  if (cleanup.state !== "succeeded") {
+    throw new Error(`Scale cleanup failed: ${JSON.stringify(cleanup)}`);
   }
-  if (new Set(asc.ids).size !== asc.ids.length) {
-    throw new Error("Pagination produced duplicate record IDs");
+  const remainingTables = await client.query(api.scale.tableCount, { runId });
+  if (remainingTables !== 0) {
+    throw new Error(`Scale cleanup left ${remainingTables} table(s)`);
   }
+  cleanedUp = true;
+  process.stdout.write("SCALE_PROGRESS cleanup=exact\n");
 
   const metrics = {
-    recordCount: asc.ids.length,
+    recordCount: records.length,
     wallTimeMs: Math.round(performance.now() - startedAt),
     pageLatencyMs: {
-      p50: percentile(asc.latencies, 0.5),
-      p95: percentile(asc.latencies, 0.95),
-      first: asc.latencies[0],
-      deep: asc.latencies[Math.floor(asc.latencies.length / 2)],
+      p50: percentile(seqAsc.latencies, 0.5),
+      p95: percentile(seqAsc.latencies, 0.95),
+      first: seqAsc.latencies[0],
+      deep: seqAsc.latencies[Math.floor(seqAsc.latencies.length / 2)],
     },
     readsPerPage: {
-      documentsP50: percentile(asc.documentsRead, 0.5),
-      documentsP95: percentile(asc.documentsRead, 0.95),
-      bytesP50: percentile(asc.bytesRead, 0.5),
-      bytesP95: percentile(asc.bytesRead, 0.95),
-      firstDocuments: asc.documentsRead[0],
+      documentsP50: percentile(seqAsc.documentsRead, 0.5),
+      documentsP95: percentile(seqAsc.documentsRead, 0.95),
+      bytesP50: percentile(seqAsc.bytesRead, 0.5),
+      bytesP95: percentile(seqAsc.bytesRead, 0.95),
+      firstDocuments: seqAsc.documentsRead[0],
       deepDocuments:
-        asc.documentsRead[Math.floor(asc.documentsRead.length / 2)],
+        seqAsc.documentsRead[Math.floor(seqAsc.documentsRead.length / 2)],
     },
     buildJobs,
-    verifyJobs,
+    independentOracle: {
+      recordCount: records.length,
+      bySeqEntryCount: seqEntries.length,
+      byGroupSeqEntryCount: groupEntries.length,
+    },
     applicationOccRetryCount: applicationRetries,
     storageAmplification: {
       indexEntriesPerRecord: 2,
-      totalIndexEntries: asc.ids.length * 2,
+      totalIndexEntries: seqEntries.length + groupEntries.length,
       note: "Exact byte storage requires a deployment export; the gate reports exact document amplification.",
     },
     failures: 0,
+    cleanup: { job: cleanup, remainingTables },
   };
   process.stdout.write(`SCALE_METRICS ${JSON.stringify(metrics)}\n`);
 } finally {
+  if (client && generatedApi && fixture && !cleanedUp) {
+    try {
+      const cleanupJob = await client.mutation(generatedApi.scale.deleteTable, {
+        runId: fixture.runId,
+        tableId: fixture.tableId,
+      });
+      await waitForJob(generatedApi, cleanupJob.jobId);
+      process.stderr.write("SCALE_PROGRESS cleanup=best-effort\n");
+    } catch (error) {
+      process.stderr.write(`SCALE_CLEANUP_FAILED ${String(error)}\n`);
+    }
+  }
   if (client) await client.close();
   if (devProcess && devProcess.exitCode === null) {
     shuttingDown = true;
@@ -229,8 +295,16 @@ async function waitForJob(api, jobId) {
   );
 }
 
-async function traverse(api, fixture, indexId, direction) {
+async function traverse(
+  api,
+  fixture,
+  indexId,
+  orderFieldIds,
+  direction,
+  label,
+) {
   const ids = [];
+  const records = [];
   const latencies = [];
   const bytesRead = [];
   const documentsRead = [];
@@ -241,22 +315,218 @@ async function traverse(api, fixture, indexId, direction) {
       runId: fixture.runId,
       tableId: fixture.tableId,
       indexId,
-      orderFieldId: fixture.seqId,
+      orderFieldIds,
       direction,
       cursor,
     });
+    if (page.planIndexId !== indexId) {
+      throw new Error(
+        `${label} ${direction} selected ${page.planIndexId} instead of ${indexId}`,
+      );
+    }
     latencies.push(Number((performance.now() - started).toFixed(3)));
     bytesRead.push(page.bytesRead);
     documentsRead.push(page.documentsRead);
     ids.push(...page.ids);
+    records.push(
+      ...page.ids.map((recordId, index) => ({
+        recordId,
+        rev: page.revs[index],
+        values: page.values[index],
+      })),
+    );
     cursor = page.continueCursor ?? undefined;
     if (latencies.length % 100 === 0) {
       process.stdout.write(
-        `SCALE_PROGRESS traversal=${direction} pages=${latencies.length}\n`,
+        `SCALE_PROGRESS traversal=${label}:${direction} pages=${latencies.length}\n`,
       );
     }
   } while (cursor);
-  return { ids, latencies, bytesRead, documentsRead };
+  return { ids, records, latencies, bytesRead, documentsRead };
+}
+
+async function readAllRecords(api, fixture) {
+  const records = [];
+  let cursor;
+  do {
+    const result = await client.query(api.scale.recordsPage, {
+      runId: fixture.runId,
+      tableId: fixture.tableId,
+      cursor,
+    });
+    records.push(...result.page);
+    cursor = result.continueCursor ?? undefined;
+    if (records.length % 10_000 === 0) {
+      process.stdout.write(`SCALE_PROGRESS oracle_records=${records.length}\n`);
+    }
+  } while (cursor);
+  return records;
+}
+
+async function readAllEntries(api, fixture, indexId, label) {
+  const entries = [];
+  let cursor;
+  do {
+    const result = await client.query(api.scale.auditEntries, {
+      runId: fixture.runId,
+      indexId,
+      cursor,
+    });
+    entries.push(...result.page);
+    cursor = result.continueCursor ?? undefined;
+    if (entries.length % 10_000 === 0) {
+      process.stdout.write(
+        `SCALE_PROGRESS oracle_entries=${label}:${entries.length}\n`,
+      );
+    }
+  } while (cursor);
+  return entries;
+}
+
+function assertOracle(records, entries, fieldIds, label) {
+  const recordsById = new Map(
+    records.map((record) => [record.recordId, record]),
+  );
+  const entriesById = new Map();
+  for (const entry of entries) {
+    if (entriesById.has(entry.recordId)) {
+      throw new Error(
+        `${label} oracle found duplicate entry for ${entry.recordId}`,
+      );
+    }
+    entriesById.set(entry.recordId, entry);
+  }
+  const mismatches = [];
+  for (const record of records) {
+    const entry = entriesById.get(record.recordId);
+    if (!entry) {
+      mismatches.push(`missing:${record.recordId}`);
+      continue;
+    }
+    const slots = fieldIds.map((fieldId) =>
+      normalize(record.values[fieldId] ?? null),
+    );
+    while (slots.length < 3) slots.push(null);
+    if (
+      entry.recordRev !== record.rev ||
+      !Object.is(entry.k0, slots[0]) ||
+      !Object.is(entry.k1, slots[1]) ||
+      !Object.is(entry.k2, slots[2])
+    ) {
+      mismatches.push(`stale:${record.recordId}`);
+    }
+  }
+  for (const entry of entries) {
+    if (!recordsById.has(entry.recordId))
+      mismatches.push(`orphan:${entry.recordId}`);
+  }
+  if (mismatches.length > 0 || entries.length !== records.length) {
+    throw new Error(
+      `${label} independent oracle mismatch count=${mismatches.length} samples=${JSON.stringify(mismatches.slice(0, 10))}`,
+    );
+  }
+}
+
+function assertExpectedRecords(records, fixture) {
+  if (records.length !== TOTAL_ROWS - 10) {
+    throw new Error(
+      `Expected ${TOTAL_ROWS - 10} surviving records, got ${records.length}`,
+    );
+  }
+  const bySequence = new Map();
+  for (const record of records) {
+    const sequence = record.values[fixture.seqId];
+    if (!Number.isInteger(sequence) || bySequence.has(sequence)) {
+      throw new Error(`Invalid or duplicate sequence ${String(sequence)}`);
+    }
+    bySequence.set(sequence, record);
+  }
+  for (let sequence = 0; sequence < TOTAL_ROWS; sequence += 1) {
+    const record = bySequence.get(sequence);
+    if (sequence >= 10 && sequence < 20) {
+      if (record) throw new Error(`Deleted sequence ${sequence} survived`);
+      continue;
+    }
+    if (!record) throw new Error(`Expected sequence ${sequence} is missing`);
+    const expectedPayload =
+      sequence < 10
+        ? `patched-during-build-${sequence}`
+        : `payload-${sequence}-${"x".repeat(40)}`;
+    if (
+      record.values[fixture.groupId] !== `group-${sequence % 100}` ||
+      record.values[fixture.payloadId] !== expectedPayload ||
+      record.rev !== (sequence < 10 ? 2 : 1)
+    ) {
+      throw new Error(`Sequence ${sequence} has an unexpected final value`);
+    }
+  }
+}
+
+function assertTraversal(records, asc, desc, fieldIds, label) {
+  const recordsById = new Map(
+    records.map((record) => [record.recordId, record]),
+  );
+  const expected = [...records].sort((left, right) =>
+    compareRecord(left, right, fieldIds),
+  );
+  const expectedIds = expected.map((record) => record.recordId);
+  if (new Set(asc.ids).size !== asc.ids.length) {
+    throw new Error(`${label} ascending traversal contains duplicate IDs`);
+  }
+  if (JSON.stringify(asc.ids) !== JSON.stringify(expectedIds)) {
+    throw new Error(
+      `${label} ascending traversal differs from independent order`,
+    );
+  }
+  if (JSON.stringify(desc.ids) !== JSON.stringify([...expectedIds].reverse())) {
+    throw new Error(`${label} descending traversal is not the exact reverse`);
+  }
+  for (const traversed of asc.records) {
+    const expectedRecord = recordsById.get(traversed.recordId);
+    if (
+      !expectedRecord ||
+      traversed.rev !== expectedRecord.rev ||
+      JSON.stringify(traversed.values) !== JSON.stringify(expectedRecord.values)
+    ) {
+      throw new Error(
+        `${label} traversal hydrated a stale value for ${traversed.recordId}`,
+      );
+    }
+  }
+}
+
+function compareRecord(left, right, fieldIds) {
+  for (const fieldId of fieldIds) {
+    const comparison = compareScalar(
+      normalize(left.values[fieldId] ?? null),
+      normalize(right.values[fieldId] ?? null),
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return left.recordId < right.recordId
+    ? -1
+    : left.recordId > right.recordId
+      ? 1
+      : 0;
+}
+
+function compareScalar(left, right) {
+  const rank = (value) =>
+    value === null
+      ? 0
+      : typeof value === "boolean"
+        ? 1
+        : typeof value === "number"
+          ? 2
+          : 3;
+  const difference = rank(left) - rank(right);
+  if (difference !== 0) return difference;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function normalize(value) {
+  return typeof value === "string" ? value.normalize("NFC") : value;
 }
 
 async function withRetries(operation) {
@@ -278,10 +548,11 @@ function percentile(values, quantile) {
   ];
 }
 
-async function startConvex(cwd, env) {
+async function startConvex(cwd, env, hosted) {
   const executable = join(cwd, "node_modules", ".bin", "convex");
-  process.stdout.write(`$ ${executable} dev\n`);
-  const child = spawn(executable, ["dev"], {
+  const args = hosted ? ["dev", "--once"] : ["dev"];
+  process.stdout.write(`$ ${executable} ${args.join(" ")}\n`);
+  const child = spawn(executable, args, {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -294,7 +565,7 @@ async function startConvex(cwd, env) {
     const onData = (chunk) => {
       const output = chunk.toString();
       process.stdout.write(output);
-      if (output.includes("Convex functions ready")) {
+      if (!hosted && output.includes("Convex functions ready")) {
         clearTimeout(timeout);
         resolve();
       }
@@ -303,11 +574,14 @@ async function startConvex(cwd, env) {
     child.stderr.on("data", onData);
     child.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(
-        new Error(`Convex dev exited before readiness with status ${code}`),
-      );
+      if (hosted && code === 0) resolve();
+      else
+        reject(
+          new Error(`Convex dev exited before readiness with status ${code}`),
+        );
     });
   });
+  if (hosted) return undefined;
   child.once("exit", (code) => {
     if (!shuttingDown) {
       process.stderr.write(

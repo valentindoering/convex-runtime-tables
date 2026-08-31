@@ -17,7 +17,6 @@ import type * as maintenance from "../maintenance.js";
 import type * as normalization from "../normalization.js";
 import type * as planner from "../planner.js";
 import type * as public_ from "../public.js";
-import type * as testing from "../testing.js";
 import type * as validation from "../validation.js";
 import type * as validators from "../validators.js";
 
@@ -38,7 +37,6 @@ const fullApi: ApiFromModules<{
   normalization: typeof normalization;
   planner: typeof planner;
   public: typeof public_;
-  testing: typeof testing;
   validation: typeof validation;
   validators: typeof validators;
 }> = anyApi as any;

@@ -468,9 +468,17 @@ async function verifyEntries(
       ...totals.staleSamples,
       ...totals.duplicateSamples,
     ].slice(0, SAMPLE_LIMIT);
+    const table = await ctx.db.get("tables", index.tableId);
+    if (index.state === "ready" && table && table.scopeId === index.scopeId) {
+      await ctx.db.patch("tables", table._id, {
+        schemaRev: table.schemaRev + 1,
+        updatedAt: checkedAt,
+      });
+    }
     await ctx.db.patch("indexDefinitions", index._id, {
-      state: index.state === "ready" ? "ready" : "failed",
+      state: "failed",
       maintenanceState: "failed",
+      activeJobId: undefined,
       verification,
       failure: {
         code,

@@ -57,6 +57,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           constraints: {
             max?: number;
             maxBytes?: number;
+            maxLength?: number;
             min?: number;
             referenceTableId?: string;
             selectOptions?: Array<{ code: string; label: string }>;
@@ -76,6 +77,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             | "select"
             | "reference";
           updatedAt: number;
+        },
+        Name
+      >;
+      auditIndexEntries: FunctionReference<
+        "query",
+        "internal",
+        {
+          indexId: string;
+          pagination: {
+            cursor?: string;
+            endCursor?: string;
+            maximumBytesRead?: number;
+            maximumRowsRead?: number;
+            pageSize: number;
+          };
+          scopeId: string;
+        },
+        {
+          continueCursor: null | string;
+          isDone: boolean;
+          page: Array<{
+            k0: null | boolean | number | string;
+            k1: null | boolean | number | string;
+            k2: null | boolean | number | string;
+            recordId: string;
+            recordRev: number;
+          }>;
         },
         Name
       >;
@@ -126,6 +154,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             constraints: {
               max?: number;
               maxBytes?: number;
+              maxLength?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -324,6 +353,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             constraints: {
               max?: number;
               maxBytes?: number;
+              maxLength?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;
@@ -530,6 +560,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           constraints: {
             max?: number;
             maxBytes?: number;
+            maxLength?: number;
             min?: number;
             referenceTableId?: string;
             selectOptions?: Array<{ code: string; label: string }>;
@@ -568,6 +599,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             constraints: {
               max?: number;
               maxBytes?: number;
+              maxLength?: number;
               min?: number;
               referenceTableId?: string;
               selectOptions?: Array<{ code: string; label: string }>;

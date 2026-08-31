@@ -75,6 +75,13 @@ const tableSchemaValidator = v.object({
   fields: v.array(fieldDoc),
   indexes: v.array(indexDoc),
 });
+const auditEntryValidator = v.object({
+  recordId: v.id("records"),
+  recordRev: v.number(),
+  k0: v.union(v.null(), v.boolean(), v.number(), v.string()),
+  k1: v.union(v.null(), v.boolean(), v.number(), v.string()),
+  k2: v.union(v.null(), v.boolean(), v.number(), v.string()),
+});
 
 export const listTables = query({
   args: { scopeId: v.string(), pagination: paginationValidator },
@@ -85,18 +92,26 @@ export const listTables = query({
   }),
   handler: async (ctx, args) => {
     validateScopeId(args.scopeId);
-    validateOpaqueCursor(args.pagination.cursor, "cursor");
-    validateOpaqueCursor(args.pagination.endCursor, "endCursor");
+    const cursor = decodeOperatorCursor(
+      args.pagination.cursor,
+      "listTables",
+      args.scopeId,
+      args.scopeId,
+    );
+    const endCursor = decodeOperatorCursor(
+      args.pagination.endCursor,
+      "listTables",
+      args.scopeId,
+      args.scopeId,
+    );
     validatePositiveInteger(args.pagination.pageSize, "pageSize", 100, 50);
     const result = await paginator(ctx.db, schema)
       .query("tables")
       .withIndex("by_scopeId_and_slug", (q) => q.eq("scopeId", args.scopeId))
       .paginate({
         numItems: args.pagination.pageSize,
-        cursor: args.pagination.cursor ?? null,
-        ...(args.pagination.endCursor
-          ? { endCursor: args.pagination.endCursor }
-          : {}),
+        cursor: cursor?.inner ?? null,
+        ...(endCursor ? { endCursor: endCursor.inner } : {}),
         maximumRowsRead: validatePositiveInteger(
           args.pagination.maximumRowsRead,
           "maximumRowsRead",
@@ -113,7 +128,14 @@ export const listTables = query({
     return {
       page: result.page,
       isDone: result.isDone,
-      continueCursor: result.isDone ? null : result.continueCursor,
+      continueCursor: result.isDone
+        ? null
+        : encodeOperatorCursor(
+            "listTables",
+            args.scopeId,
+            args.scopeId,
+            result.continueCursor,
+          ),
     };
   },
 });
@@ -196,6 +218,85 @@ export const getJob = query({
     const job = await ctx.db.get("jobs", args.jobId);
     if (!job) return null;
     return ensureScope(job, args.scopeId, "Job");
+  },
+});
+
+/** Bounded raw sidecar access for an independent host-owned consistency oracle. */
+export const auditIndexEntries = query({
+  args: {
+    scopeId: v.string(),
+    indexId: v.id("indexDefinitions"),
+    pagination: paginationValidator,
+  },
+  returns: v.object({
+    page: v.array(auditEntryValidator),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.null(), v.string()),
+  }),
+  handler: async (ctx, args) => {
+    validateScopeId(args.scopeId);
+    const index = ensureScope(
+      await ctx.db.get("indexDefinitions", args.indexId),
+      args.scopeId,
+      "Index",
+    );
+    const cursor = decodeOperatorCursor(
+      args.pagination.cursor,
+      "auditIndexEntries",
+      args.scopeId,
+      index._id,
+    );
+    const endCursor = decodeOperatorCursor(
+      args.pagination.endCursor,
+      "auditIndexEntries",
+      args.scopeId,
+      index._id,
+    );
+    const result = await paginator(ctx.db, schema)
+      .query("indexEntries")
+      .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
+        q.eq("scopeId", args.scopeId).eq("indexId", index._id),
+      )
+      .paginate({
+        numItems: validatePositiveInteger(
+          args.pagination.pageSize,
+          "pageSize",
+          100,
+          50,
+        ),
+        cursor: cursor?.inner ?? null,
+        ...(endCursor ? { endCursor: endCursor.inner } : {}),
+        maximumRowsRead: validatePositiveInteger(
+          args.pagination.maximumRowsRead,
+          "maximumRowsRead",
+          1_000,
+          500,
+        ),
+        maximumBytesRead: validatePositiveInteger(
+          args.pagination.maximumBytesRead,
+          "maximumBytesRead",
+          4_000_000,
+          4_000_000,
+        ),
+      });
+    return {
+      page: result.page.map((entry) => ({
+        recordId: entry.recordId,
+        recordRev: entry.recordRev,
+        k0: entry.k0,
+        k1: entry.k1,
+        k2: entry.k2,
+      })),
+      isDone: result.isDone,
+      continueCursor: result.isDone
+        ? null
+        : encodeOperatorCursor(
+            "auditIndexEntries",
+            args.scopeId,
+            index._id,
+            result.continueCursor,
+          ),
+    };
   },
 });
 
@@ -871,13 +972,67 @@ export const deleteTable = mutation({
   },
 });
 
-function validateOpaqueCursor(value: string | undefined, label: string): void {
-  if (value === undefined) return;
+type OperatorCursorKind = "listTables" | "auditIndexEntries";
+type OperatorCursor = {
+  version: 1;
+  kind: OperatorCursorKind;
+  scopeId: string;
+  resourceId: string;
+  inner: string;
+};
+
+function encodeOperatorCursor(
+  kind: OperatorCursorKind,
+  scopeId: string,
+  resourceId: string,
+  inner: string,
+): string {
+  const encoded = `crt-op1:${encodeURIComponent(
+    JSON.stringify({ version: 1, kind, scopeId, resourceId, inner }),
+  )}`;
   invariant(
-    new TextEncoder().encode(value).byteLength <= MAX_CURSOR_BYTES,
-    "INVALID_CURSOR",
-    `${label} exceeds ${MAX_CURSOR_BYTES} bytes`,
+    new TextEncoder().encode(encoded).byteLength <= MAX_CURSOR_BYTES,
+    "LIMIT_EXCEEDED",
+    `Cursor exceeds ${MAX_CURSOR_BYTES} bytes`,
   );
+  return encoded;
+}
+
+function decodeOperatorCursor(
+  encoded: string | undefined,
+  kind: OperatorCursorKind,
+  scopeId: string,
+  resourceId: string,
+): OperatorCursor | null {
+  if (encoded === undefined) return null;
+  try {
+    invariant(
+      new TextEncoder().encode(encoded).byteLength <= MAX_CURSOR_BYTES,
+      "INVALID_CURSOR",
+      `Cursor exceeds ${MAX_CURSOR_BYTES} bytes`,
+    );
+    invariant(
+      encoded.startsWith("crt-op1:"),
+      "INVALID_CURSOR",
+      "Unsupported operator cursor version",
+    );
+    const payload = JSON.parse(
+      decodeURIComponent(encoded.slice(8)),
+    ) as OperatorCursor;
+    invariant(
+      payload.version === 1 &&
+        payload.kind === kind &&
+        payload.scopeId === scopeId &&
+        payload.resourceId === resourceId &&
+        typeof payload.inner === "string",
+      "INVALID_CURSOR",
+      "Cursor does not belong to this scope or resource",
+    );
+    return payload;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConvexError") throw error;
+    fail("INVALID_CURSOR", "Cursor is malformed");
+  }
 }
 
 function isTerminalJob(state: Doc<"jobs">["state"]): boolean {

@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 
+import { makeFunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
@@ -7,6 +8,15 @@ import * as publicFunctions from "./public.js";
 import { initConvexTest } from "./setup.test.js";
 
 const scopeId = "scope-a";
+const patchRecordWithoutIndexMaintenance = makeFunctionReference<
+  "mutation",
+  {
+    scopeId: string;
+    recordId: Id<"records">;
+    values: Record<string, null | boolean | number | string>;
+  },
+  null
+>("faults.test:patchRecordWithoutIndexMaintenance");
 
 describe("runtime tables component", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -228,6 +238,49 @@ describe("runtime tables component", () => {
     expect(second[0]!.rev).toBe(2);
   });
 
+  test("documents bounded post-filter pages as possibly short while not done", async () => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t);
+    await t.mutation(api.public.insertRecords, {
+      scopeId,
+      tableId: created.tableId,
+      records: Array.from({ length: 9 }, (_, index) => ({
+        values: valuesFor(created.fieldIds, index),
+      })),
+    });
+    await t.mutation(api.public.createIndex, {
+      scopeId,
+      tableId: created.tableId,
+      name: "byAccount",
+      fieldIds: [created.fieldIds.accountId!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const first = await t.query(api.public.queryRecords, {
+      scopeId,
+      tableId: created.tableId,
+      query: {
+        where: [
+          {
+            fieldId: created.fieldIds.accountId!,
+            op: "eq",
+            value: "account-1",
+          },
+          {
+            fieldId: created.fieldIds.merchant!,
+            op: "eq",
+            value: "Merchant 6",
+          },
+        ],
+      },
+      pagination: { pageSize: 1 },
+    });
+    expect(first.plan).toMatchObject({ kind: "index", postFiltered: true });
+    expect(first.page).toHaveLength(0);
+    expect(first.isDone).toBe(false);
+    expect(first.continueCursor).not.toBeNull();
+  });
+
   test("fails closed for another scope's resource IDs", async () => {
     const t = initConvexTest();
     const created = await createTransactionsTable(t);
@@ -240,104 +293,234 @@ describe("runtime tables component", () => {
   });
 
   test("keeps the public isolation matrix synchronized with every export", async () => {
-    expect(Object.keys(publicFunctions).sort()).toEqual(
-      [
-        "addField",
-        "createIndex",
-        "createTable",
-        "deleteIndex",
-        "deleteRecord",
-        "deleteTable",
-        "explainQuery",
-        "getJob",
-        "getRecord",
-        "getTable",
-        "insertRecords",
-        "listTables",
-        "patchRecord",
-        "queryRecords",
-        "repairIndex",
-        "retryIndexBuild",
-        "updateField",
-        "updateTable",
-        "upsertRecords",
-        "verifyIndex",
-      ].sort(),
-    );
-
     const t = initConvexTest();
-    const created = await createTransactionsTable(t);
-    const [record] = await t.mutation(api.public.insertRecords, {
+    const local = await createTransactionsTable(t);
+    const foreignScope = "scope-b";
+    const foreign = await createTransactionsTable(t, foreignScope);
+    const localRecords = await t.mutation(api.public.insertRecords, {
       scopeId,
-      tableId: created.tableId,
-      records: [{ values: valuesFor(created.fieldIds, 1) }],
+      tableId: local.tableId,
+      records: [1, 2].map((value) => ({
+        values: valuesFor(local.fieldIds, value),
+      })),
     });
-    const { indexId, jobId } = await t.mutation(api.public.createIndex, {
+    const foreignRecords = await t.mutation(api.public.insertRecords, {
+      scopeId: foreignScope,
+      tableId: foreign.tableId,
+      records: [1, 2].map((value) => ({
+        values: valuesFor(foreign.fieldIds, value),
+      })),
+    });
+    const localIndex = await t.mutation(api.public.createIndex, {
       scopeId,
-      tableId: created.tableId,
-      name: "isolation",
-      fieldIds: [created.fieldIds.sourceRef!],
+      tableId: local.tableId,
+      name: "localIsolation",
+      fieldIds: [local.fieldIds.sourceRef!],
       unique: true,
     });
+    const foreignIndex = await t.mutation(api.public.createIndex, {
+      scopeId: foreignScope,
+      tableId: foreign.tableId,
+      name: "foreignIsolation",
+      fieldIds: [foreign.fieldIds.sourceRef!],
+      unique: true,
+    });
+    await t.mutation(api.public.createTable, {
+      scopeId: foreignScope,
+      slug: "foreign-cursor-second-table",
+      name: "Foreign cursor second table",
+      fields: [],
+    });
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-    const foreignScope = "scope-b";
-    const cases: Array<[string, () => Promise<unknown>]> = [
-      [
-        "getTable",
-        () =>
+    const foreignTableCursor = (
+      await t.query(api.public.listTables, {
+        scopeId: foreignScope,
+        pagination: { pageSize: 1 },
+      })
+    ).continueCursor!;
+    const foreignRecordCursor = (
+      await t.query(api.public.queryRecords, {
+        scopeId: foreignScope,
+        tableId: foreign.tableId,
+        query: { where: [] },
+        pagination: { pageSize: 1 },
+      })
+    ).continueCursor!;
+    const foreignEntryCursor = (
+      await t.query(api.public.auditIndexEntries, {
+        scopeId: foreignScope,
+        indexId: foreignIndex.indexId,
+        pagination: { pageSize: 1 },
+      })
+    ).continueCursor!;
+
+    type IsolationCase = { resource: string; invoke: () => Promise<unknown> };
+    const model: Record<string, IsolationCase[]> = {
+      createTable: [
+        {
+          resource: "referenceTableId",
+          invoke: () =>
+            t.mutation(api.public.createTable, {
+              scopeId,
+              slug: "foreign-reference-create",
+              name: "Foreign reference create",
+              fields: [
+                {
+                  key: "target",
+                  name: "Target",
+                  type: "reference",
+                  required: true,
+                  constraints: { referenceTableId: foreign.tableId },
+                },
+              ],
+            }),
+        },
+      ],
+      listTables: [
+        {
+          resource: "cursor",
+          invoke: () =>
+            t.query(api.public.listTables, {
+              scopeId,
+              pagination: { pageSize: 1, cursor: foreignTableCursor },
+            }),
+        },
+      ],
+      getTable: [
+        foreignTableCase(() =>
           t.query(api.public.getTable, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
           }),
+        ),
       ],
-      [
-        "getRecord",
-        () =>
+      getRecord: [
+        foreignTableCase(() =>
           t.query(api.public.getRecord, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            recordId: record!.recordId,
+            scopeId,
+            tableId: foreign.tableId,
+            recordId: foreignRecords[0]!.recordId,
           }),
+        ),
+        {
+          resource: "recordId",
+          invoke: () =>
+            t.query(api.public.getRecord, {
+              scopeId,
+              tableId: local.tableId,
+              recordId: foreignRecords[0]!.recordId,
+            }),
+        },
       ],
-      [
-        "queryRecords",
-        () =>
+      queryRecords: [
+        foreignTableCase(() =>
           t.query(api.public.queryRecords, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
             query: { where: [] },
             pagination: { pageSize: 1 },
           }),
+        ),
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.query(api.public.queryRecords, {
+              scopeId,
+              tableId: local.tableId,
+              query: {
+                where: [
+                  {
+                    fieldId: foreign.fieldIds.merchant!,
+                    op: "eq",
+                    value: "Merchant 1",
+                  },
+                ],
+              },
+              pagination: { pageSize: 1 },
+            }),
+        },
+        {
+          resource: "cursor",
+          invoke: () =>
+            t.query(api.public.queryRecords, {
+              scopeId,
+              tableId: local.tableId,
+              query: { where: [] },
+              pagination: { pageSize: 1, cursor: foreignRecordCursor },
+            }),
+        },
       ],
-      [
-        "explainQuery",
-        () =>
+      explainQuery: [
+        foreignTableCase(() =>
           t.query(api.public.explainQuery, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
             query: { where: [] },
           }),
+        ),
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.query(api.public.explainQuery, {
+              scopeId,
+              tableId: local.tableId,
+              query: {
+                where: [
+                  {
+                    fieldId: foreign.fieldIds.merchant!,
+                    op: "eq",
+                    value: "Merchant 1",
+                  },
+                ],
+              },
+            }),
+        },
       ],
-      [
-        "getJob",
-        () => t.query(api.public.getJob, { scopeId: foreignScope, jobId }),
+      getJob: [
+        {
+          resource: "jobId",
+          invoke: () =>
+            t.query(api.public.getJob, {
+              scopeId,
+              jobId: foreignIndex.jobId,
+            }),
+        },
       ],
-      [
-        "updateTable",
-        () =>
+      auditIndexEntries: [
+        {
+          resource: "indexId",
+          invoke: () =>
+            t.query(api.public.auditIndexEntries, {
+              scopeId,
+              indexId: foreignIndex.indexId,
+              pagination: { pageSize: 1 },
+            }),
+        },
+        {
+          resource: "cursor",
+          invoke: () =>
+            t.query(api.public.auditIndexEntries, {
+              scopeId,
+              indexId: localIndex.indexId,
+              pagination: { pageSize: 1, cursor: foreignEntryCursor },
+            }),
+        },
+      ],
+      updateTable: [
+        foreignTableCase(() =>
           t.mutation(api.public.updateTable, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
             patch: { name: "Foreign" },
             expectedSchemaRev: 2,
           }),
+        ),
       ],
-      [
-        "addField",
-        () =>
+      addField: [
+        foreignTableCase(() =>
           t.mutation(api.public.addField, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
             field: {
               key: "foreign",
               name: "Foreign",
@@ -346,112 +529,250 @@ describe("runtime tables component", () => {
             },
             expectedSchemaRev: 2,
           }),
+        ),
+        {
+          resource: "referenceTableId",
+          invoke: () =>
+            t.mutation(api.public.addField, {
+              scopeId,
+              tableId: local.tableId,
+              field: {
+                key: "foreignReference",
+                name: "Foreign reference",
+                type: "reference",
+                required: false,
+                constraints: { referenceTableId: foreign.tableId },
+              },
+              expectedSchemaRev: 3,
+            }),
+        },
       ],
-      [
-        "updateField",
-        () =>
-          t.mutation(api.public.updateField, {
-            scopeId: foreignScope,
-            fieldId: created.fieldIds.merchant!,
-            patch: { name: "Foreign" },
-            expectedSchemaRev: 2,
-          }),
+      updateField: [
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.mutation(api.public.updateField, {
+              scopeId,
+              fieldId: foreign.fieldIds.merchant!,
+              patch: { name: "Foreign" },
+              expectedSchemaRev: 2,
+            }),
+        },
       ],
-      [
-        "insertRecords",
-        () =>
+      insertRecords: [
+        foreignTableCase(() =>
           t.mutation(api.public.insertRecords, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            records: [{ values: valuesFor(created.fieldIds, 2) }],
+            scopeId,
+            tableId: foreign.tableId,
+            records: [{ values: valuesFor(foreign.fieldIds, 3) }],
           }),
+        ),
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.mutation(api.public.insertRecords, {
+              scopeId,
+              tableId: local.tableId,
+              records: [
+                {
+                  values: {
+                    ...valuesFor(local.fieldIds, 3),
+                    [foreign.fieldIds.merchant!]: "Foreign",
+                  },
+                },
+              ],
+            }),
+        },
       ],
-      [
-        "patchRecord",
-        () =>
+      patchRecord: [
+        foreignTableCase(() =>
           t.mutation(api.public.patchRecord, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            recordId: record!.recordId,
+            scopeId,
+            tableId: foreign.tableId,
+            recordId: foreignRecords[0]!.recordId,
             patch: { values: {} },
             expectedRev: 1,
           }),
+        ),
+        {
+          resource: "recordId",
+          invoke: () =>
+            t.mutation(api.public.patchRecord, {
+              scopeId,
+              tableId: local.tableId,
+              recordId: foreignRecords[0]!.recordId,
+              patch: { values: {} },
+              expectedRev: 1,
+            }),
+        },
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.mutation(api.public.patchRecord, {
+              scopeId,
+              tableId: local.tableId,
+              recordId: localRecords[0]!.recordId,
+              patch: {
+                values: { [foreign.fieldIds.merchant!]: "Foreign" },
+              },
+              expectedRev: 1,
+            }),
+        },
       ],
-      [
-        "upsertRecords",
-        () =>
+      upsertRecords: [
+        foreignTableCase(() =>
           t.mutation(api.public.upsertRecords, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            uniqueIndexId: indexId,
-            records: [{ values: valuesFor(created.fieldIds, 2) }],
+            scopeId,
+            tableId: foreign.tableId,
+            uniqueIndexId: foreignIndex.indexId,
+            records: [{ values: valuesFor(foreign.fieldIds, 3) }],
           }),
+        ),
+        {
+          resource: "indexId",
+          invoke: () =>
+            t.mutation(api.public.upsertRecords, {
+              scopeId,
+              tableId: local.tableId,
+              uniqueIndexId: foreignIndex.indexId,
+              records: [{ values: valuesFor(local.fieldIds, 3) }],
+            }),
+        },
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.mutation(api.public.upsertRecords, {
+              scopeId,
+              tableId: local.tableId,
+              uniqueIndexId: localIndex.indexId,
+              records: [
+                {
+                  values: {
+                    ...valuesFor(local.fieldIds, 3),
+                    [foreign.fieldIds.merchant!]: "Foreign",
+                  },
+                },
+              ],
+            }),
+        },
       ],
-      [
-        "deleteRecord",
-        () =>
+      deleteRecord: [
+        foreignTableCase(() =>
           t.mutation(api.public.deleteRecord, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            recordId: record!.recordId,
+            scopeId,
+            tableId: foreign.tableId,
+            recordId: foreignRecords[0]!.recordId,
           }),
+        ),
+        {
+          resource: "recordId",
+          invoke: () =>
+            t.mutation(api.public.deleteRecord, {
+              scopeId,
+              tableId: local.tableId,
+              recordId: foreignRecords[0]!.recordId,
+            }),
+        },
       ],
-      [
-        "createIndex",
-        () =>
+      createIndex: [
+        foreignTableCase(() =>
           t.mutation(api.public.createIndex, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
-            name: "foreign",
-            fieldIds: [created.fieldIds.sourceRef!],
+            scopeId,
+            tableId: foreign.tableId,
+            name: "foreignTable",
+            fieldIds: [foreign.fieldIds.sourceRef!],
             unique: false,
           }),
+        ),
+        {
+          resource: "fieldId",
+          invoke: () =>
+            t.mutation(api.public.createIndex, {
+              scopeId,
+              tableId: local.tableId,
+              name: "foreignField",
+              fieldIds: [foreign.fieldIds.sourceRef!],
+              unique: false,
+            }),
+        },
       ],
-      [
-        "verifyIndex",
-        () =>
+      verifyIndex: [
+        foreignIndexCase(() =>
           t.mutation(api.public.verifyIndex, {
-            scopeId: foreignScope,
-            indexId,
+            scopeId,
+            indexId: foreignIndex.indexId,
           }),
+        ),
       ],
-      [
-        "repairIndex",
-        () =>
+      repairIndex: [
+        foreignIndexCase(() =>
           t.mutation(api.public.repairIndex, {
-            scopeId: foreignScope,
-            indexId,
+            scopeId,
+            indexId: foreignIndex.indexId,
           }),
+        ),
       ],
-      [
-        "retryIndexBuild",
-        () =>
+      retryIndexBuild: [
+        foreignIndexCase(() =>
           t.mutation(api.public.retryIndexBuild, {
-            scopeId: foreignScope,
-            indexId,
+            scopeId,
+            indexId: foreignIndex.indexId,
           }),
+        ),
       ],
-      [
-        "deleteIndex",
-        () =>
+      deleteIndex: [
+        foreignIndexCase(() =>
           t.mutation(api.public.deleteIndex, {
-            scopeId: foreignScope,
-            indexId,
+            scopeId,
+            indexId: foreignIndex.indexId,
           }),
+        ),
       ],
-      [
-        "deleteTable",
-        () =>
+      deleteTable: [
+        foreignTableCase(() =>
           t.mutation(api.public.deleteTable, {
-            scopeId: foreignScope,
-            tableId: created.tableId,
+            scopeId,
+            tableId: foreign.tableId,
           }),
+        ),
       ],
-    ];
-    for (const [name, invoke] of cases) {
-      await expect(invoke(), name).rejects.toThrow(
-        /SCOPE_MISMATCH|another scope/,
-      );
+    };
+
+    expect(Object.keys(model).sort()).toEqual(
+      Object.keys(publicFunctions).sort(),
+    );
+    for (const [operation, cases] of Object.entries(model)) {
+      expect(cases.length, operation).toBeGreaterThan(0);
+      for (const testCase of cases) {
+        await expect(
+          testCase.invoke(),
+          `${operation}:${testCase.resource}`,
+        ).rejects.toThrow(
+          /SCOPE_MISMATCH|VALIDATION_FAILED|INVALID_CURSOR|another scope|does not belong|not found/i,
+        );
+      }
+    }
+
+    const sharedKey = "same-key-in-two-scopes";
+    const localWrite = await t.mutation(api.public.insertRecords, {
+      scopeId,
+      tableId: local.tableId,
+      records: [{ values: valuesFor(local.fieldIds, 20) }],
+      idempotencyKey: sharedKey,
+    });
+    const foreignWrite = await t.mutation(api.public.insertRecords, {
+      scopeId: foreignScope,
+      tableId: foreign.tableId,
+      records: [{ values: valuesFor(foreign.fieldIds, 20) }],
+      idempotencyKey: sharedKey,
+    });
+    expect(foreignWrite[0]!.recordId).not.toBe(localWrite[0]!.recordId);
+
+    function foreignTableCase(invoke: () => Promise<unknown>): IsolationCase {
+      return { resource: "tableId", invoke };
+    }
+    function foreignIndexCase(invoke: () => Promise<unknown>): IsolationCase {
+      return { resource: "indexId", invoke };
     }
   });
 
@@ -687,21 +1008,41 @@ describe("runtime tables component", () => {
     }
   });
 
-  test.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5])(
-    "rejects invalid pagination budget %s",
-    async (invalid) => {
-      const t = initConvexTest();
-      const created = await createTransactionsTable(t);
-      await expect(
-        t.query(api.public.queryRecords, {
-          scopeId,
-          tableId: created.tableId,
-          query: { where: [] },
-          pagination: { pageSize: 10, maximumRowsRead: invalid },
-        }),
-      ).rejects.toThrow(/positive finite integer|VALIDATION_FAILED/);
-    },
-  );
+  test.each(
+    ["pageSize", "maximumRowsRead", "maximumBytesRead"].flatMap((field) =>
+      [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5].map(
+        (value) => [field, value] as const,
+      ),
+    ),
+  )("L1 rejects invalid pagination %s=%s", async (field, invalid) => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t);
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId,
+        tableId: created.tableId,
+        query: { where: [] },
+        pagination: { pageSize: 10, [field]: invalid },
+      }),
+    ).rejects.toThrow(/positive finite integer|VALIDATION_FAILED/);
+  });
+
+  test.each([
+    ["pageSize", 101],
+    ["maximumRowsRead", 1_001],
+    ["maximumBytesRead", 4_000_001],
+  ] as const)("L1 rejects pagination cap %s=%s", async (field, invalid) => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t);
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId,
+        tableId: created.tableId,
+        query: { where: [] },
+        pagination: { pageSize: 10, [field]: invalid },
+      }),
+    ).rejects.toThrow(/cannot exceed|LIMIT_EXCEEDED/);
+  });
 
   test("invalidates cursors after a result-shaping schema change", async () => {
     const t = initConvexTest();
@@ -814,11 +1155,27 @@ describe("runtime tables component", () => {
     const wrongResource = `crt2:${encodeURIComponent(
       JSON.stringify({ ...payload, tableId: "foreign-table" }),
     )}`;
+    const wrongScope = `crt2:${encodeURIComponent(
+      JSON.stringify({ ...payload, scopeId: "foreign-scope" }),
+    )}`;
+    const wrongPlan = `crt2:${encodeURIComponent(
+      JSON.stringify({ ...payload, plan: `${String(payload.plan)}-tampered` }),
+    )}`;
+    const wrongSchemaRev = `crt2:${encodeURIComponent(
+      JSON.stringify({ ...payload, schemaRev: Number(payload.schemaRev) + 1 }),
+    )}`;
+    const wrongInner = `crt2:${encodeURIComponent(
+      JSON.stringify({ ...payload, inner: "tampered-inner-cursor" }),
+    )}`;
     for (const cursor of [
       "not-a-cursor",
       "x".repeat(8_193),
+      wrongScope,
       wrongDirection,
       wrongResource,
+      wrongPlan,
+      wrongSchemaRev,
+      wrongInner,
     ]) {
       await expect(
         t.query(api.public.queryRecords, {
@@ -843,6 +1200,47 @@ describe("runtime tables component", () => {
           ],
         },
         pagination: { pageSize: 1, cursor: first.continueCursor! },
+      }),
+    ).rejects.toThrow(/INVALID_CURSOR|does not belong/);
+
+    const { indexId } = await t.mutation(api.public.createIndex, {
+      scopeId,
+      tableId: created.tableId,
+      name: "cursorTamper",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const indexed = await t.query(api.public.queryRecords, {
+      scopeId,
+      tableId: created.tableId,
+      query: {
+        where: [],
+        orderBy: {
+          fieldIds: [created.fieldIds.sourceRef!],
+          direction: "asc",
+        },
+      },
+      pagination: { pageSize: 1 },
+    });
+    const indexPayload = JSON.parse(
+      decodeURIComponent(indexed.continueCursor!.slice(5)),
+    ) as Record<string, unknown>;
+    const wrongIndex = `crt2:${encodeURIComponent(
+      JSON.stringify({ ...indexPayload, indexId: `${indexId}-tampered` }),
+    )}`;
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId,
+        tableId: created.tableId,
+        query: {
+          where: [],
+          orderBy: {
+            fieldIds: [created.fieldIds.sourceRef!],
+            direction: "asc",
+          },
+        },
+        pagination: { pageSize: 1, cursor: wrongIndex },
       }),
     ).rejects.toThrow(/INVALID_CURSOR|does not belong/);
   });
@@ -1111,7 +1509,23 @@ describe("runtime tables component", () => {
       unique: false,
     });
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-    await t.mutation(internal.testing.patchRecordWithoutIndexMaintenance, {
+    const before = await t.query(api.public.queryRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      query: {
+        where: [
+          {
+            fieldId: created.fieldIds.sourceRef!,
+            op: "eq",
+            value: "source-1",
+          },
+        ],
+      },
+      pagination: { pageSize: 10 },
+    });
+    expect(before.plan).toMatchObject({ kind: "index", indexId });
+    expect(before.page).toHaveLength(1);
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
       scopeId: testScope,
       recordId: written!.recordId,
       values: {
@@ -1123,6 +1537,21 @@ describe("runtime tables component", () => {
       scopeId: testScope,
       indexId,
     });
+    const during = await t.query(api.public.queryRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      query: {
+        where: [
+          {
+            fieldId: created.fieldIds.sourceRef!,
+            op: "eq",
+            value: "source-1",
+          },
+        ],
+      },
+      pagination: { pageSize: 10 },
+    });
+    expect(during.plan).toMatchObject({ kind: "index", indexId });
     await t.finishAllScheduledFunctions(() => vi.runAllTimers());
     const job = await t.query(api.public.getJob, { scopeId: testScope, jobId });
     const table = await t.query(api.public.getTable, {
@@ -1132,8 +1561,79 @@ describe("runtime tables component", () => {
     const index = table.indexes.find((candidate) => candidate._id === indexId)!;
     expect(job?.state).toBe("failed");
     expect(job?.verification?.stale).toBeGreaterThan(0);
-    expect(index.state).toBe("ready");
+    expect(index.state).toBe("failed");
     expect(index.maintenanceState).toBe("failed");
+    const after = await t.query(api.public.queryRecords, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      query: {
+        where: [
+          {
+            fieldId: created.fieldIds.sourceRef!,
+            op: "eq",
+            value: "writer-path-was-skipped",
+          },
+        ],
+      },
+      pagination: { pageSize: 10 },
+    });
+    expect(after.plan.kind).toBe("scan");
+    expect(after.page.map((record) => record._id)).toEqual([written!.recordId]);
+  });
+
+  test("a failed verified index cannot remain authoritative for a large table", async () => {
+    const t = initConvexTest();
+    const testScope = "test-failed-index-large-table";
+    const created = await createTransactionsTable(t, testScope);
+    const written: Array<{ recordId: Id<"records"> }> = [];
+    for (let start = 0; start < 201; start += 100) {
+      written.push(
+        ...(await t.mutation(api.public.insertRecords, {
+          scopeId: testScope,
+          tableId: created.tableId,
+          records: Array.from(
+            { length: Math.min(100, 201 - start) },
+            (_, offset) => ({
+              values: valuesFor(created.fieldIds, start + offset),
+            }),
+          ),
+        })),
+      );
+    }
+    const { indexId } = await t.mutation(api.public.createIndex, {
+      scopeId: testScope,
+      tableId: created.tableId,
+      name: "sourceRef",
+      fieldIds: [created.fieldIds.sourceRef!],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
+      scopeId: testScope,
+      recordId: written[0]!.recordId,
+      values: {
+        ...valuesFor(created.fieldIds, 0),
+        [created.fieldIds.sourceRef!]: "writer-path-was-skipped",
+      },
+    });
+    await t.mutation(api.public.verifyIndex, { scopeId: testScope, indexId });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    await expect(
+      t.query(api.public.queryRecords, {
+        scopeId: testScope,
+        tableId: created.tableId,
+        query: {
+          where: [
+            {
+              fieldId: created.fieldIds.sourceRef!,
+              op: "eq",
+              value: "writer-path-was-skipped",
+            },
+          ],
+        },
+        pagination: { pageSize: 10 },
+      }),
+    ).rejects.toThrow(/INDEX_NOT_READY|failed verification/);
   });
 
   test("deduplicates active deletes and starts a new generation after failure", async () => {
@@ -1175,6 +1675,62 @@ describe("runtime tables component", () => {
         jobId: retried.jobId,
       }),
     ).toMatchObject({ state: "succeeded" });
+  });
+
+  test("fails a generation-fenced job that makes no progress for five minutes", async () => {
+    const t = initConvexTest();
+    const created = await createTransactionsTable(t, "test-stalled-job");
+    const now = Date.now();
+    const ids = await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("jobs", {
+        scopeId: "test-stalled-job",
+        kind: "buildIndex",
+        targetId: "pending",
+        state: "running",
+        phase: "backfill",
+        cursor: null,
+        progress: 0,
+        generation: 1,
+        batchCount: 1,
+        retryCount: 0,
+        lastError: null,
+        createdAt: now - 600_000,
+        updatedAt: now - 600_000,
+      });
+      const indexId = await ctx.db.insert("indexDefinitions", {
+        scopeId: "test-stalled-job",
+        tableId: created.tableId,
+        name: "stalled",
+        fieldIds: [created.fieldIds.sourceRef!],
+        unique: false,
+        state: "building",
+        maintenanceState: "backfilling",
+        generation: 1,
+        activeJobId: jobId,
+        failure: null,
+        createdAt: now - 600_000,
+        updatedAt: now - 600_000,
+      });
+      await ctx.db.patch("jobs", jobId, { targetId: indexId });
+      return { jobId, indexId };
+    });
+    await t.mutation(internal.maintenance.cleanupExpired, {});
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const job = await t.query(api.public.getJob, {
+      scopeId: "test-stalled-job",
+      jobId: ids.jobId,
+    });
+    const table = await t.query(api.public.getTable, {
+      scopeId: "test-stalled-job",
+      tableId: created.tableId,
+    });
+    expect(job).toMatchObject({
+      state: "failed",
+      lastError: { code: "JOB_STALLED" },
+    });
+    expect(
+      table.indexes.find((index) => index._id === ids.indexId),
+    ).toMatchObject({ state: "failed", maintenanceState: "failed" });
   });
 
   test("paginates listTables without silent truncation", async () => {

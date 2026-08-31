@@ -39,6 +39,15 @@ observable failure. There is no automatic retry policy for unexpected errors; an
 operator must call the explicit retry or repair operation. `batchCount` and
 `retryCount` therefore have distinct meanings.
 
+The hourly retention sweep also queries queued and running jobs through
+`jobs.by_state_and_updatedAt`. A job with no progress for five minutes is failed
+through the same generation-fenced unexpected-failure path with `JOB_STALLED`.
+The sweep examines at most 100 stale jobs per pass and reschedules itself when
+more remain. Operators retry an index with `retryIndexBuild`/`repairIndex` or
+repeat a failed delete, which starts a new generation. The component does not
+hide retries in `batchCount`; `retryCount` remains zero under this fail-fast
+application policy.
+
 The build pipeline is:
 
 1. backfill, which may write entries;
@@ -46,13 +55,17 @@ The build pipeline is:
 3. independent record and entry verification, which never writes entries;
 4. ready only when every verification count is zero.
 
-A verification mismatch fails a building index. An operator verification of a
-ready index leaves serving state ready but marks maintenance failed and stores
-diagnostics.
+A verification mismatch fails a building index. A ready index continues serving
+while an operator verification is running. If that verification finds drift, the
+same transaction changes serving state to `failed`, clears `activeJobId`, stores
+bounded diagnostics, and increments the owning table's `schemaRev`. The planner
+stops selecting it immediately. Small queries may use the bounded scan fallback;
+large queries that match the failed index return `INDEX_NOT_READY` with the
+failed index ID. A failed index cannot remain an authoritative read path.
 
 ## Consequences
 
 Lifecycle transitions require more metadata and tests. Stale callbacks are safe
 and observable. Verification can detect an ordinary writer defect instead of
 hiding it through self-healing. Ready queries remain available during operator
-verification.
+verification, but verified drift fails closed after the mismatch is known.

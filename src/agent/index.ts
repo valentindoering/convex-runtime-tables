@@ -102,27 +102,122 @@ const argumentShapes: Record<
   },
 };
 
+const idSchema = { type: "string", minLength: 1, maxLength: 200 } as const;
+const scalarSchema = {
+  oneOf: [
+    { type: "null" },
+    { type: "boolean" },
+    { type: "number" },
+    { type: "string" },
+  ],
+} as const;
+const valuesSchema = {
+  type: "object",
+  maxProperties: 200,
+  propertyNames: { type: "string", minLength: 1, maxLength: 200 },
+  additionalProperties: scalarSchema,
+} as const;
+const querySchema = {
+  type: "object",
+  required: ["where"],
+  additionalProperties: false,
+  properties: {
+    where: {
+      type: "array",
+      maxItems: 16,
+      items: {
+        type: "object",
+        required: ["fieldId", "op", "value"],
+        additionalProperties: false,
+        properties: {
+          fieldId: idSchema,
+          op: { enum: ["eq", "lt", "lte", "gt", "gte"] },
+          value: scalarSchema,
+        },
+      },
+    },
+    orderBy: {
+      type: "object",
+      required: ["fieldIds", "direction"],
+      additionalProperties: false,
+      properties: {
+        fieldIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          uniqueItems: true,
+          items: idSchema,
+        },
+        direction: { enum: ["asc", "desc"] },
+      },
+    },
+  },
+} as const;
+const paginationSchema = {
+  type: "object",
+  required: ["pageSize"],
+  additionalProperties: false,
+  properties: {
+    pageSize: { type: "integer", minimum: 1, maximum: 100 },
+    cursor: { type: "string", maxLength: 8192 },
+    endCursor: { type: "string", maxLength: 8192 },
+    maximumRowsRead: { type: "integer", minimum: 1, maximum: 1000 },
+    maximumBytesRead: { type: "integer", minimum: 1, maximum: 4_000_000 },
+  },
+} as const;
+const recordsSchema = {
+  type: "array",
+  minItems: 1,
+  maxItems: 100,
+  items: {
+    type: "object",
+    required: ["values"],
+    additionalProperties: false,
+    properties: { values: valuesSchema },
+  },
+} as const;
+const patchSchema = {
+  type: "object",
+  required: ["values"],
+  additionalProperties: false,
+  properties: {
+    values: valuesSchema,
+    unsetFieldIds: {
+      type: "array",
+      maxItems: 200,
+      uniqueItems: true,
+      items: idSchema,
+    },
+  },
+} as const;
+
 const argumentPropertySchemas = {
   scopeId: { type: "string", minLength: 1, maxLength: 200 },
-  tableId: { type: "string", minLength: 1 },
-  recordId: { type: "string", minLength: 1 },
-  indexId: { type: "string", minLength: 1 },
-  uniqueIndexId: { type: "string", minLength: 1 },
-  jobId: { type: "string", minLength: 1 },
+  tableId: idSchema,
+  recordId: idSchema,
+  indexId: idSchema,
+  uniqueIndexId: idSchema,
+  jobId: idSchema,
   idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
-  name: { type: "string", minLength: 1, maxLength: 200 },
+  name: {
+    type: "string",
+    minLength: 1,
+    maxLength: 64,
+    pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+  },
   unique: { type: "boolean" },
-  expectedRev: { type: "number" },
-  records: { type: "array", minItems: 1, maxItems: 100 },
+  expectedRev: { type: "integer", minimum: 1 },
+  records: recordsSchema,
   fieldIds: {
     type: "array",
     minItems: 1,
     maxItems: 3,
-    items: { type: "string", minLength: 1 },
+    uniqueItems: true,
+    items: idSchema,
   },
-  query: { type: "object" },
-  pagination: { type: "object" },
-  patch: { type: "object" },
+  query: querySchema,
+  pagination: paginationSchema,
+  patch: patchSchema,
 } as const;
 
 export const runtimeTablesAgentOperationSchemasV1 =
@@ -267,10 +362,10 @@ function validateCommonTypes(
   ] as const) {
     if (Object.hasOwn(args, key)) {
       const value = args[key];
-      if (typeof value !== "string" || value.length === 0) {
+      if (typeof value !== "string" || value.length < 1 || value.length > 200) {
         throw new RuntimeTablesAgentError(
           "INVALID_REQUEST",
-          `${key} must be a non-empty string`,
+          `${key} must contain 1 to 200 characters`,
         );
       }
     }
@@ -295,6 +390,8 @@ function validateCommonTypes(
           Object.keys(record).some((key) => key !== "values") ||
           !Object.hasOwn(record, "values") ||
           !isPlainObject(record.values) ||
+          Object.keys(record.values).length > 200 ||
+          Object.keys(record.values).some((key) => !isBoundedId(key)) ||
           Object.values(record.values).some((value) => !isScalar(value)),
       )
     ) {
@@ -309,7 +406,8 @@ function validateCommonTypes(
       !Array.isArray(args.fieldIds) ||
       args.fieldIds.length < 1 ||
       args.fieldIds.length > 3 ||
-      args.fieldIds.some((fieldId) => typeof fieldId !== "string")
+      args.fieldIds.some((fieldId) => !isBoundedId(fieldId)) ||
+      new Set(args.fieldIds).size !== args.fieldIds.length
     ) {
       throw new RuntimeTablesAgentError(
         "INVALID_REQUEST",
@@ -318,7 +416,11 @@ function validateCommonTypes(
     }
   }
   if (operation === "createIndex") {
-    if (typeof args.name !== "string" || typeof args.unique !== "boolean") {
+    if (
+      typeof args.name !== "string" ||
+      !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(args.name) ||
+      typeof args.unique !== "boolean"
+    ) {
       throw new RuntimeTablesAgentError(
         "INVALID_REQUEST",
         "createIndex requires string name and boolean unique",
@@ -327,7 +429,7 @@ function validateCommonTypes(
   }
   if (
     Object.hasOwn(args, "expectedRev") &&
-    typeof args.expectedRev !== "number"
+    !isPositiveInteger(args.expectedRev)
   ) {
     throw new RuntimeTablesAgentError(
       "INVALID_REQUEST",
@@ -360,9 +462,25 @@ function validatePagination(value: Record<string, unknown>): void {
       invalid(`${key} must be a positive integer`);
     }
   }
+  if (value.pageSize > 100) invalid("pageSize must be at most 100");
+  if (
+    Object.hasOwn(value, "maximumRowsRead") &&
+    Number(value.maximumRowsRead) > 1_000
+  ) {
+    invalid("maximumRowsRead must be at most 1000");
+  }
+  if (
+    Object.hasOwn(value, "maximumBytesRead") &&
+    Number(value.maximumBytesRead) > 4_000_000
+  ) {
+    invalid("maximumBytesRead must be at most 4000000");
+  }
   for (const key of ["cursor", "endCursor"] as const) {
-    if (Object.hasOwn(value, key) && typeof value[key] !== "string") {
-      invalid(`${key} must be a string`);
+    if (Object.hasOwn(value, key)) {
+      if (typeof value[key] !== "string") invalid(`${key} must be a string`);
+      if (new TextEncoder().encode(value[key]).byteLength > 8_192) {
+        invalid(`${key} must not exceed 8192 bytes`);
+      }
     }
   }
 }
@@ -376,7 +494,7 @@ function validateQuery(value: Record<string, unknown>): void {
     if (!isPlainObject(predicate)) invalid("Each predicate must be an object");
     assertExactKeys(predicate, ["fieldId", "op", "value"], "predicate");
     if (
-      typeof predicate.fieldId !== "string" ||
+      !isBoundedId(predicate.fieldId) ||
       !["eq", "gt", "gte", "lt", "lte"].includes(String(predicate.op)) ||
       !isScalar(predicate.value)
     ) {
@@ -385,6 +503,14 @@ function validateQuery(value: Record<string, unknown>): void {
       );
     }
   }
+  const rangeFields = new Set(
+    value.where
+      .filter((predicate) => isPlainObject(predicate) && predicate.op !== "eq")
+      .map((predicate) => String(predicate.fieldId)),
+  );
+  if (rangeFields.size > 1) {
+    invalid("Queries with ranges on more than one field are unsupported");
+  }
   if (Object.hasOwn(value, "orderBy")) {
     if (!isPlainObject(value.orderBy)) invalid("orderBy must be an object");
     assertExactKeys(value.orderBy, ["fieldIds", "direction"], "orderBy");
@@ -392,7 +518,8 @@ function validateQuery(value: Record<string, unknown>): void {
       !Array.isArray(value.orderBy.fieldIds) ||
       value.orderBy.fieldIds.length < 1 ||
       value.orderBy.fieldIds.length > 3 ||
-      value.orderBy.fieldIds.some((fieldId) => typeof fieldId !== "string") ||
+      value.orderBy.fieldIds.some((fieldId) => !isBoundedId(fieldId)) ||
+      new Set(value.orderBy.fieldIds).size !== value.orderBy.fieldIds.length ||
       !["asc", "desc"].includes(String(value.orderBy.direction))
     ) {
       invalid(
@@ -406,6 +533,8 @@ function validatePatch(value: Record<string, unknown>): void {
   assertExactKeys(value, ["values", "unsetFieldIds"], "patch");
   if (
     !isPlainObject(value.values) ||
+    Object.keys(value.values).length > 200 ||
+    Object.keys(value.values).some((fieldId) => !isBoundedId(fieldId)) ||
     Object.values(value.values).some((item) => !isScalar(item))
   ) {
     invalid("patch.values must be an object of scalar values");
@@ -413,10 +542,16 @@ function validatePatch(value: Record<string, unknown>): void {
   if (
     Object.hasOwn(value, "unsetFieldIds") &&
     (!Array.isArray(value.unsetFieldIds) ||
-      value.unsetFieldIds.some((fieldId) => typeof fieldId !== "string"))
+      value.unsetFieldIds.length > 200 ||
+      value.unsetFieldIds.some((fieldId) => !isBoundedId(fieldId)) ||
+      new Set(value.unsetFieldIds).size !== value.unsetFieldIds.length)
   ) {
     invalid("unsetFieldIds must be an array of strings");
   }
+}
+
+function isBoundedId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= 200;
 }
 
 function isPositiveInteger(value: unknown): value is number {

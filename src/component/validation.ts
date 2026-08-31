@@ -17,6 +17,7 @@ export const MAX_BATCH_BYTES = 1_500_000;
 export const SCAN_LIMIT = 200;
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const JOB_STALL_MS = 5 * 60 * 1000;
 
 type FieldInput = {
   key: string;

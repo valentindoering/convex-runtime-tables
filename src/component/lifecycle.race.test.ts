@@ -1,53 +1,63 @@
 /// <reference types="vite/client" />
 
+import { makeFunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { normalizeIndexSlots, type Scalar } from "./normalization.js";
 import { initConvexTest } from "./setup.test.js";
 
 const REPETITIONS = 20;
 type TestInstance = ReturnType<typeof initConvexTest>;
+const patchRecordWithoutIndexMaintenance = makeFunctionReference<
+  "mutation",
+  {
+    scopeId: string;
+    recordId: Id<"records">;
+    values: Record<string, null | boolean | number | string>;
+  },
+  null
+>("faults.test:patchRecordWithoutIndexMaintenance");
 
 describe("forced lifecycle and write races", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  test("R1 delete versus backfill leaves no orphan", async () => {
+  test("R1 deterministic delete between backfill batches leaves no orphan", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r1-${run}`);
-      await insert(t, fixture, "a", "before");
+      const ids = await insertRange(t, fixture, 205);
       const build = await createIndex(t, fixture, false);
-      await t.mutation(api.public.deleteIndex, {
+      await step(t);
+      await t.mutation(api.public.deleteRecord, {
         scopeId: fixture.scopeId,
-        indexId: build.indexId,
+        tableId: fixture.tableId,
+        recordId: ids[0]!,
       });
       await drain(t);
+      await expectReady(t, fixture, build.indexId);
       await assertOracle(t, fixture);
       const residue = await t.run(
         async (ctx) =>
           await ctx.db
             .query("indexEntries")
-            .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
-              q.eq("scopeId", fixture.scopeId).eq("indexId", build.indexId),
+            .withIndex("by_scopeId_and_recordId_and_indexId", (q) =>
+              q.eq("scopeId", fixture.scopeId).eq("recordId", ids[0]!),
             )
             .take(1),
       );
       expect(residue).toHaveLength(0);
     }
-  });
+  }, 120_000);
 
   test("R2 updates before and after the backfill cursor converge", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r2-${run}`);
-      const ids: Id<"records">[] = [];
-      for (let index = 0; index < 60; index += 1) {
-        ids.push(await insert(t, fixture, `key-${index}`, `value-${index}`));
-      }
+      const ids = await insertRange(t, fixture, 205);
       const build = await createIndex(t, fixture, false);
-      await patch(t, fixture, ids[55]!, 1, "before-cursor");
+      await patch(t, fixture, ids[204]!, 1, "before-cursor");
       await step(t);
       await patch(t, fixture, ids[0]!, 1, "after-cursor");
       await drain(t);
@@ -56,13 +66,11 @@ describe("forced lifecycle and write races", () => {
     }
   }, 120_000);
 
-  test("R3 insert around the backfill cursor is indexed", async () => {
+  test("R3 insert after the backfill cursor is indexed", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r3-${run}`);
-      for (let index = 0; index < 60; index += 1) {
-        await insert(t, fixture, `key-${index}`, `value-${index}`);
-      }
+      await insertRange(t, fixture, 205);
       const build = await createIndex(t, fixture, false);
       await step(t);
       await insert(t, fixture, "inserted-at-boundary", "latest");
@@ -76,9 +84,7 @@ describe("forced lifecycle and write races", () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r4-${run}`);
-      for (let index = 0; index < 60; index += 1) {
-        await insert(t, fixture, `key-${index}`, `value-${index}`);
-      }
+      await insertRange(t, fixture, 205);
       const build = await createIndex(t, fixture, false);
       await step(t);
       const repair = await t.mutation(api.public.repairIndex, {
@@ -106,14 +112,19 @@ describe("forced lifecycle and write races", () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r5-${run}`);
-      await insert(t, fixture, "key", "value");
+      await insertRange(t, fixture, 205);
       const first = await createIndex(t, fixture, false, "first");
+      await step(t);
       await t.mutation(api.public.deleteIndex, {
         scopeId: fixture.scopeId,
         indexId: first.indexId,
       });
-      await drain(t);
       const second = await createIndex(t, fixture, false, "second");
+      await t.mutation(internal.indexJobs.runIndexBatch, {
+        jobId: first.jobId,
+        generation: 1,
+        phase: "backfill",
+      });
       await drain(t);
       await expectReady(t, fixture, second.indexId);
       const deadEntries = await t.run(
@@ -128,15 +139,13 @@ describe("forced lifecycle and write races", () => {
       expect(deadEntries).toHaveLength(0);
       await assertOracle(t, fixture);
     }
-  });
+  }, 120_000);
 
   test("R6 table deletion during backfill purges all residue", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r6-${run}`);
-      for (let index = 0; index < 60; index += 1) {
-        await insert(t, fixture, `key-${index}`, `value-${index}`);
-      }
+      await insertRange(t, fixture, 205);
       await createIndex(t, fixture, false);
       await step(t);
       const deleted = await t.mutation(api.public.deleteTable, {
@@ -169,7 +178,46 @@ describe("forced lifecycle and write races", () => {
     }
   }, 120_000);
 
-  test("R7 concurrent unique inserts admit one logical value", async () => {
+  test("O2/O3 a fault after repair is detected by build verification without self-healing", async () => {
+    const t = initConvexTest();
+    const fixture = await createFixture(t, "test-o2-o3-build-verification");
+    const ids = await insertRange(t, fixture, 205);
+    const build = await createIndex(t, fixture, false);
+    let reachedVerification = false;
+    for (let batch = 0; batch < 20; batch += 1) {
+      const job = await t.query(api.public.getJob, {
+        scopeId: fixture.scopeId,
+        jobId: build.jobId,
+      });
+      if (job?.phase === "verifyRecords") {
+        reachedVerification = true;
+        break;
+      }
+      await step(t);
+    }
+    expect(reachedVerification).toBe(true);
+    await t.mutation(patchRecordWithoutIndexMaintenance, {
+      scopeId: fixture.scopeId,
+      recordId: ids[0]!,
+      values: values(fixture, "fault-after-repair", "changed"),
+    });
+    await drain(t);
+    const job = await t.query(api.public.getJob, {
+      scopeId: fixture.scopeId,
+      jobId: build.jobId,
+    });
+    const table = await t.query(api.public.getTable, {
+      scopeId: fixture.scopeId,
+      tableId: fixture.tableId,
+    });
+    expect(job).toMatchObject({ state: "failed" });
+    expect(job?.verification?.stale).toBeGreaterThan(0);
+    expect(
+      table.indexes.find((index) => index._id === build.indexId),
+    ).toMatchObject({ state: "failed", maintenanceState: "failed" });
+  });
+
+  test("unique inserts admit one logical value in the unit harness", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r7-${run}`);
@@ -190,7 +238,7 @@ describe("forced lifecycle and write races", () => {
     }
   });
 
-  test("R8 concurrent idempotent batches return the same IDs", async () => {
+  test("idempotent batches return the same IDs in the unit harness", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r8-${run}`);
@@ -215,7 +263,7 @@ describe("forced lifecycle and write races", () => {
     }
   });
 
-  test("R9 concurrent expectedRev patches have one winner", async () => {
+  test("expectedRev patches have one winner in the unit harness", async () => {
     for (let run = 0; run < REPETITIONS; run += 1) {
       const t = initConvexTest();
       const fixture = await createFixture(t, `test-r9-${run}`);
@@ -279,6 +327,28 @@ async function insert(
     records: [{ values: values(fixture, key, value) }],
   });
   return result!.recordId;
+}
+
+async function insertRange(t: TestInstance, fixture: Fixture, count: number) {
+  const ids: Id<"records">[] = [];
+  for (let start = 0; start < count; start += 100) {
+    const result = await t.mutation(api.public.insertRecords, {
+      scopeId: fixture.scopeId,
+      tableId: fixture.tableId,
+      records: Array.from(
+        { length: Math.min(100, count - start) },
+        (_, offset) => ({
+          values: values(
+            fixture,
+            `key-${start + offset}`,
+            `value-${start + offset}`,
+          ),
+        }),
+      ),
+    });
+    ids.push(...result.map((record) => record.recordId));
+  }
+  return ids;
 }
 
 async function patch(

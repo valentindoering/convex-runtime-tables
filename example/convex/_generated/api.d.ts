@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as concurrency from "../concurrency.js";
 import type * as example from "../example.js";
 import type * as scale from "../scale.js";
 
@@ -18,6 +19,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  concurrency: typeof concurrency;
   example: typeof example;
   scale: typeof scale;
 }>;

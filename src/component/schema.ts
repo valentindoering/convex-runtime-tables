@@ -170,6 +170,7 @@ export default defineSchema({
     retentionExpiresAt: v.optional(v.number()),
   })
     .index("by_scopeId_and_state", ["scopeId", "state"])
+    .index("by_state_and_updatedAt", ["state", "updatedAt"])
     .index("by_scopeId_and_targetId", ["scopeId", "targetId"])
     .index("by_scopeId_and_retentionExpiresAt", [
       "scopeId",

@@ -9,8 +9,10 @@ the fields remaining after the equality prefix. Direction is wholly ascending or
 wholly descending.
 
 Additional predicates are evaluated after hydration. `plan.postFiltered` reports
-this. Post filtering can shorten a page because the cursor advances over the
-bounded sidecar read, not only returned records.
+this. Post filtering can produce a short or empty page with `isDone: false`
+because the cursor advances over the bounded sidecar read, not only returned
+records. Callers must continue while `continueCursor` is non-null; a short page
+does not mean traversal is complete.
 
 The planner selects only `ready` indexes. It returns:
 
@@ -27,9 +29,23 @@ table without a runtime index. For other queries, the component reads at most
 Larger tables throw `INDEX_REQUIRED` and `explainQuery` returns a deterministic
 field list in `suggestedIndex`; no partial data is returned.
 
+A ready index remains selectable while read-only operator verification is in
+progress. If verification proves sidecar drift, the index changes to `failed`,
+the table schema revision increments, and old cursors become invalid. Small
+queries use the bounded scan fallback. A large query that would otherwise match
+that failed index returns `INDEX_NOT_READY` with the index ID instead of using
+the sidecar or suggesting the same index again.
+
 More than one range field returns `UNSUPPORTED_QUERY` with no index suggestion.
 If a query would require more than the three supported index fields, it also
 returns `UNSUPPORTED_QUERY`. Every emitted suggestion is therefore achievable.
+
+`auditIndexEntries` is a bounded operator/audit query for independent
+consistency checks. Like every component query, it is callable only through a
+host wrapper that owns authorization and passes the authorized `scopeId`. It
+validates the index scope, caps pages at 100, caps rows and bytes read, and caps
+opaque cursors at 8 KiB. It returns record IDs, revisions, and normalized index
+slots, not record payloads.
 
 Page size is 1 through 100. Read budgets must be positive finite integers and
 cannot exceed 1,000 rows or 4,000,000 bytes. Cursors are capped at 8 KiB and
