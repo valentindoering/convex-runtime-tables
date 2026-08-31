@@ -60,10 +60,12 @@ GitHub runner. Its 100,000-row step took 2 hours 11 minutes 56 seconds and is
 not cloud-deployment evidence for this revision.
 
 An isolated expiring Convex development deployment named `perfect-lark-558` was
-provisioned for the review gate. No repository code has been uploaded to it. The
-environment blocked that external upload pending explicit user approval for this
-named destination. Therefore the packed-consumer cloud subscription and the full
-100,000-row cloud run remain unexecuted and must not be summarized as passing.
+provisioned for the review gate. GitHub run `33435188493` later uploaded commit
+`44e77c05d3758377db574077857a49d140e5bac0`; its packed-consumer cloud
+subscription passed and its 100,000-row suite is still running. That older run
+does not certify the current hardening revision. The hosted packed-consumer and
+100,000-row gates must be rerun at the final SHA and must not be summarized as
+passing for this revision until that run completes with exact cleanup.
 
 The revised 100,000-row harness now:
 
