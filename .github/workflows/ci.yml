@@ -22,7 +22,14 @@ jobs:
       - run: npm ci
       - run: npm run format
       - run: npm run lint
-      - run: npm run check:codegen
+      - name: Check component codegen freshness
+        env:
+          CONVEX_AGENT_MODE: anonymous
+          CONVEX_DEPLOYMENT: anonymous:anonymous-agent
+          CONVEX_DISABLE_SENTRY: "1"
+          VITE_CONVEX_URL: http://127.0.0.1:50090
+          VITE_CONVEX_SITE_URL: http://127.0.0.1:50091
+        run: npm run check:codegen
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:race
