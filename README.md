@@ -62,13 +62,19 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts the anonymous local Convex backend, the component build
-watcher, and Vite together. It prints one readiness line when both services are
-available at `http://127.0.0.1:5173/` and stops both on Ctrl-C.
+`npm run dev` starts an isolated anonymous local Convex backend, the component
+build watcher, and Vite together. Each Git worktree gets a deterministic
+deployment identity and its own loopback-only ports. Open the `Showcase ready`
+link printed after both services pass their readiness checks. The launcher
+refuses cloud and non-loopback Convex targets and stops all services on Ctrl-C.
 
-The example initializes a `transactions` runtime table, builds three indexes,
-seeds an idempotent dataset, and renders a reactive grid. Development uses an
-anonymous local Convex backend and does not publish a deployment.
+The interactive showcase initializes a `transactions` runtime table, builds four
+indexes, and presents six idempotent sample rows in a restrained database table.
+Compact account, category, and direction controls still exercise runtime planner
+selection. `New` immediately inserts an `Untitled` record, and the visible cells
+edit inline with optimistic revision checks. Hover actions still demonstrate a
+numeric patch and atomic deletion. Development uses an anonymous local Convex
+backend and does not publish a deployment.
 
 Verification commands:
 
