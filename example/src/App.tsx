@@ -297,7 +297,7 @@ export default function App() {
     return (
       <main className="database-page loading-page">
         <ShowcaseHeader />
-        <p className="quiet-message">Connecting to the local database…</p>
+        <p className="quiet-message">Connecting to the database…</p>
       </main>
     );
   }
