@@ -10,7 +10,9 @@
 
 import type * as concurrency from "../concurrency.js";
 import type * as example from "../example.js";
+import type * as http from "../http.js";
 import type * as scale from "../scale.js";
+import type * as staticHosting from "../staticHosting.js";
 
 import type {
   ApiFromModules,
@@ -21,7 +23,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   concurrency: typeof concurrency;
   example: typeof example;
+  http: typeof http;
   scale: typeof scale;
+  staticHosting: typeof staticHosting;
 }>;
 
 /**
@@ -52,4 +56,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   runtimeTables: import("convex-runtime-tables/_generated/component.js").ComponentApi<"runtimeTables">;
+  selfHosting: import("@convex-dev/static-hosting/_generated/component.js").ComponentApi<"selfHosting">;
 };

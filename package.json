@@ -20,6 +20,7 @@
     "dev": "node scripts/dev-all.mjs",
     "dev:build": "chokidar 'tsconfig*.json' 'src/**/*.ts' -i '**/*.test.ts' -c 'npm run build:codegen' --initial",
     "build": "node scripts/clean-dist.mjs && tsc --project ./tsconfig.build.json",
+    "build:showcase": "vite build example",
     "build:codegen": "npx convex codegen --component-dir ./src/component && npm run build",
     "check:codegen": "npm run build:codegen && git diff --exit-code -- src/component/_generated example/convex/_generated",
     "build:clean": "rm -rf dist *.tsbuildinfo && npm run build:codegen",
@@ -36,6 +37,7 @@
     "test:consumer": "node scripts/consumer-smoke.mjs",
     "test:reactivity": "node scripts/consumer-smoke.mjs --reactivity",
     "test:scale": "node scripts/live-scale.mjs",
+    "upload:showcase": "static-hosting upload --dist example/dist --component selfHosting --spa",
     "changeset": "changeset",
     "prepare": "npm run build",
     "preversion": "node scripts/release-blocked.mjs",
@@ -81,6 +83,7 @@
   "devDependencies": {
     "@changesets/cli": "^3.0.1",
     "@convex-dev/eslint-plugin": "^4.0.0",
+    "@convex-dev/static-hosting": "^0.2.1",
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/eslintrc": "^3.3.6",
     "@eslint/js": "9.39.5",
