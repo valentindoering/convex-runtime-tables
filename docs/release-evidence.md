@@ -1,15 +1,39 @@
 # Release evidence
 
 Status (2026-09-22): npm prerelease preparation is in progress. Publication
-remains blocked pending a fresh release review and working hosted credentials.
+remains blocked pending a fresh release review and final-candidate hosted gates.
 The historical sections below describe earlier runs, not the current candidate.
+
+## Release review repair, September 22
+
+The fresh review found impossible index suggestions when equality fields occur
+inside the requested ordering, ignored scan `endCursor`, unstructured malformed
+operator-cursor errors, and full-record read amplification past transaction
+limits. The repair normalizes constant ordering fields, validates/pins scan end
+boundaries, guards operator cursors, and byte-bounds lifecycle reads and indexed
+record hydration without skipping continuation entries.
+
+- `src/component/releaseRegression.test.ts` covers 16 ordering/equality
+  variants, ascending/descending scan boundaries, malformed operator cursors,
+  and thirty 600 KB records with enforced transaction limits through
+  build/query/purge.
+- `npm test`: 110 tests, 10 files, no type errors; 14.44 seconds.
+- `npm run typecheck`, format, lint, build: passed.
+- The packed consumer passed on the new isolated dev deployment
+  `precise-stoat-634` (expires in four days). It mounted/codegenerated with no
+  drift, exercised two independent-client subscription fixtures, and built,
+  traversed both directions, and purged thirty 600 KB records plus the seed row.
+  Log: `/private/tmp/crt-hosted-consumer-20260922.log`.
+- The final candidate still needs independent regression review and the fresh
+  100k hosted suite. These results are not a production GO.
 
 ## Verified publishing status, 2026-09-22
 
 - Public npm lookup for `convex-runtime-tables` returned E404. No public package
   was found under that name; this does not reserve the name.
-- `npm whoami --registry=https://registry.npmjs.org` returned E401. Publishing
-  needs a valid npm login or an explicitly configured trusted publisher.
+- The latest `npm whoami --registry=https://registry.npmjs.org` check succeeded
+  as `valentindoering`. An earlier E401 has been resolved; nothing was
+  published.
 - [CI run 33532204130](https://github.com/valentindoering/convex-runtime-tables/actions/runs/33532204130)
   succeeded for `a2843691041d2095ceec46cde0b78b4f4ba53d47`.
 - [Hosted run 33726911021](https://github.com/valentindoering/convex-runtime-tables/actions/runs/33726911021)

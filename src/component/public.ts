@@ -17,7 +17,11 @@ import {
   secureRequestHash,
   type Scalar,
 } from "./normalization.js";
-import { explain, queryRecords as executeQuery } from "./planner.js";
+import {
+  explain,
+  paginateWithCursorGuard,
+  queryRecords as executeQuery,
+} from "./planner.js";
 import schema from "./schema.js";
 import {
   fieldInputValidator,
@@ -105,26 +109,32 @@ export const listTables = query({
       args.scopeId,
     );
     validatePositiveInteger(args.pagination.pageSize, "pageSize", 100, 50);
-    const result = await paginator(ctx.db, schema)
-      .query("tables")
-      .withIndex("by_scopeId_and_slug", (q) => q.eq("scopeId", args.scopeId))
-      .paginate({
-        numItems: args.pagination.pageSize,
-        cursor: cursor?.inner ?? null,
-        ...(endCursor ? { endCursor: endCursor.inner } : {}),
-        maximumRowsRead: validatePositiveInteger(
-          args.pagination.maximumRowsRead,
-          "maximumRowsRead",
-          1_000,
-          500,
-        ),
-        maximumBytesRead: validatePositiveInteger(
-          args.pagination.maximumBytesRead,
-          "maximumBytesRead",
-          4_000_000,
-          4_000_000,
-        ),
-      });
+    const result = await paginateWithCursorGuard(
+      () =>
+        paginator(ctx.db, schema)
+          .query("tables")
+          .withIndex("by_scopeId_and_slug", (q) =>
+            q.eq("scopeId", args.scopeId),
+          )
+          .paginate({
+            numItems: args.pagination.pageSize,
+            cursor: cursor?.inner ?? null,
+            ...(endCursor ? { endCursor: endCursor.inner } : {}),
+            maximumRowsRead: validatePositiveInteger(
+              args.pagination.maximumRowsRead,
+              "maximumRowsRead",
+              1_000,
+              500,
+            ),
+            maximumBytesRead: validatePositiveInteger(
+              args.pagination.maximumBytesRead,
+              "maximumBytesRead",
+              4_000_000,
+              4_000_000,
+            ),
+          }),
+      Boolean(cursor || endCursor),
+    );
     return {
       page: result.page,
       isDone: result.isDone,
@@ -252,33 +262,37 @@ export const auditIndexEntries = query({
       args.scopeId,
       index._id,
     );
-    const result = await paginator(ctx.db, schema)
-      .query("indexEntries")
-      .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
-        q.eq("scopeId", args.scopeId).eq("indexId", index._id),
-      )
-      .paginate({
-        numItems: validatePositiveInteger(
-          args.pagination.pageSize,
-          "pageSize",
-          100,
-          50,
-        ),
-        cursor: cursor?.inner ?? null,
-        ...(endCursor ? { endCursor: endCursor.inner } : {}),
-        maximumRowsRead: validatePositiveInteger(
-          args.pagination.maximumRowsRead,
-          "maximumRowsRead",
-          1_000,
-          500,
-        ),
-        maximumBytesRead: validatePositiveInteger(
-          args.pagination.maximumBytesRead,
-          "maximumBytesRead",
-          4_000_000,
-          4_000_000,
-        ),
-      });
+    const result = await paginateWithCursorGuard(
+      () =>
+        paginator(ctx.db, schema)
+          .query("indexEntries")
+          .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
+            q.eq("scopeId", args.scopeId).eq("indexId", index._id),
+          )
+          .paginate({
+            numItems: validatePositiveInteger(
+              args.pagination.pageSize,
+              "pageSize",
+              100,
+              50,
+            ),
+            cursor: cursor?.inner ?? null,
+            ...(endCursor ? { endCursor: endCursor.inner } : {}),
+            maximumRowsRead: validatePositiveInteger(
+              args.pagination.maximumRowsRead,
+              "maximumRowsRead",
+              1_000,
+              500,
+            ),
+            maximumBytesRead: validatePositiveInteger(
+              args.pagination.maximumBytesRead,
+              "maximumBytesRead",
+              4_000_000,
+              4_000_000,
+            ),
+          }),
+      Boolean(cursor || endCursor),
+    );
     return {
       page: result.page.map((entry) => ({
         recordId: entry.recordId,

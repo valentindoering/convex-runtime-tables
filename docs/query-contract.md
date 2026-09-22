@@ -1,5 +1,15 @@
 # Query contract
 
+Record pagination is byte-bounded as well as row-bounded. An indexed page can
+return fewer than `pageSize` rows when hydrating large records; always follow
+`continueCursor` until `isDone`. The byte boundary is soft by at most one
+record, matching component-safe pagination. Small-table fallback requires the
+complete scan to fit the read budget; otherwise it returns an achievable index
+requirement or `UNSUPPORTED_QUERY`. This prevents a few large rows from
+exhausting the transaction read limit. Index build, verification, repair and
+purge batches also bound record reads, including reads reached through sidecar
+entries.
+
 `queryRecords` accepts `where`, optional `orderBy`, and pagination limits.
 
 Supported predicates are `eq`, `lt`, `lte`, `gt`, and `gte`. A runtime index can

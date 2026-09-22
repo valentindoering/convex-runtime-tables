@@ -7,7 +7,8 @@ import { internalMutation } from "./_generated/server.js";
 import { upsertIndexEntry } from "./data.js";
 import { normalizeIndexSlots, type Scalar } from "./normalization.js";
 import schema from "./schema.js";
-import { JOB_RETENTION_MS } from "./validation.js";
+import { JOB_RETENTION_MS, MAX_BYTES_READ } from "./validation.js";
+import { hydrateRecordPage } from "./recordHydration.js";
 import { jobKindValidator, jobPhaseValidator } from "./validators.js";
 
 const BATCH_SIZE = 200;
@@ -118,12 +119,18 @@ export const runDeleteTableBatch = internalMutation({
       await schedule(ctx, job, "deleteEntries");
       return null;
     }
-    const records = await ctx.db
-      .query("records")
-      .withIndex("by_scopeId_and_tableId", (q) =>
-        q.eq("scopeId", job.scopeId).eq("tableId", table._id),
-      )
-      .take(BATCH_SIZE);
+    const records = (
+      await paginator(ctx.db, schema)
+        .query("records")
+        .withIndex("by_scopeId_and_tableId", (q) =>
+          q.eq("scopeId", job.scopeId).eq("tableId", table._id),
+        )
+        .paginate({
+          numItems: BATCH_SIZE,
+          cursor: null,
+          maximumBytesRead: MAX_BYTES_READ,
+        })
+    ).page;
     if (records.length > 0) {
       for (const record of records) await ctx.db.delete("records", record._id);
       await continueDelete(ctx, job, "deleteRecords", records.length);
@@ -227,7 +234,11 @@ async function backfill(
     .withIndex("by_scopeId_and_tableId", (q) =>
       q.eq("scopeId", job.scopeId).eq("tableId", index.tableId),
     )
-    .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
+    .paginate({
+      numItems: BATCH_SIZE,
+      cursor: job.cursor,
+      maximumBytesRead: MAX_BYTES_READ,
+    });
   for (const record of result.page)
     await upsertIndexEntry(ctx, index, record, false, true);
   if (!(await requireCurrentIndex(ctx, job, "backfilling"))) return;
@@ -261,7 +272,11 @@ async function repairRecords(
     .withIndex("by_scopeId_and_tableId", (q) =>
       q.eq("scopeId", job.scopeId).eq("tableId", index.tableId),
     )
-    .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
+    .paginate({
+      numItems: BATCH_SIZE,
+      cursor: job.cursor,
+      maximumBytesRead: MAX_BYTES_READ,
+    });
   for (const record of result.page)
     await upsertIndexEntry(ctx, index, record, false, true);
   if (!(await requireCurrentIndex(ctx, job, "repairing"))) return;
@@ -290,14 +305,30 @@ async function repairEntries(
   job: IndexJob,
   index: Doc<"indexDefinitions">,
 ) {
-  const result = await paginator(ctx.db, schema)
+  const stream = paginator(ctx.db, schema)
     .query("indexEntries")
     .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
       q.eq("scopeId", job.scopeId).eq("indexId", index._id),
-    )
-    .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
-  for (const entry of result.page) {
-    const record = await ctx.db.get("records", entry.recordId);
+    );
+  const initial = await stream.paginate({
+    numItems: BATCH_SIZE,
+    cursor: job.cursor,
+    maximumBytesRead: MAX_BYTES_READ,
+  });
+  const { result, records } = await hydrateRecordPage(
+    ctx,
+    initial,
+    (count) =>
+      stream.paginate({
+        numItems: count,
+        cursor: job.cursor,
+        maximumRowsRead: count,
+        maximumBytesRead: MAX_BYTES_READ,
+      }),
+    MAX_BYTES_READ,
+  );
+  for (const [position, entry] of result.page.entries()) {
+    const record = records[position];
     if (
       !record ||
       record.scopeId !== job.scopeId ||
@@ -351,7 +382,11 @@ async function verifyRecords(
     .withIndex("by_scopeId_and_tableId", (q) =>
       q.eq("scopeId", job.scopeId).eq("tableId", index.tableId),
     )
-    .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
+    .paginate({
+      numItems: BATCH_SIZE,
+      cursor: job.cursor,
+      maximumBytesRead: MAX_BYTES_READ,
+    });
   const delta = emptyVerification();
   for (const record of result.page) {
     const entries = await ctx.db
@@ -420,15 +455,31 @@ async function verifyEntries(
   job: IndexJob,
   index: Doc<"indexDefinitions">,
 ) {
-  const result = await paginator(ctx.db, schema)
+  const stream = paginator(ctx.db, schema)
     .query("indexEntries")
     .withIndex("by_scopeId_and_indexId_and_recordId", (q) =>
       q.eq("scopeId", job.scopeId).eq("indexId", index._id),
-    )
-    .paginate({ numItems: BATCH_SIZE, cursor: job.cursor });
+    );
+  const initial = await stream.paginate({
+    numItems: BATCH_SIZE,
+    cursor: job.cursor,
+    maximumBytesRead: MAX_BYTES_READ,
+  });
+  const { result, records } = await hydrateRecordPage(
+    ctx,
+    initial,
+    (count) =>
+      stream.paginate({
+        numItems: count,
+        cursor: job.cursor,
+        maximumRowsRead: count,
+        maximumBytesRead: MAX_BYTES_READ,
+      }),
+    MAX_BYTES_READ,
+  );
   const delta = emptyVerification();
-  for (const entry of result.page) {
-    const record = await ctx.db.get("records", entry.recordId);
+  for (const [position, entry] of result.page.entries()) {
+    const record = records[position];
     if (
       !record ||
       record.scopeId !== job.scopeId ||

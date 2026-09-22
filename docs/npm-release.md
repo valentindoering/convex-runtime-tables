@@ -38,8 +38,9 @@ consumer or hosted gates. No preparation command publishes the package.
    cleanup to pass. Link both logs in release evidence.
 3. Complete the fresh production release review requested in the original
    hardening brief. No affirmative review is recorded in this checkout.
-4. Authenticate the intended npm publisher with `npm login`, or configure npm
-   trusted publishing. The September 22 authentication check returned E401.
+4. Recheck the intended npm publisher immediately before publication. The latest
+   September 22 check succeeded as `valentindoering`; the package name returned
+   E404 and has not been published.
 
 ## Publish after the gates pass
 

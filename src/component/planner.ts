@@ -16,6 +16,7 @@ import {
   type Scalar,
 } from "./normalization.js";
 import schema from "./schema.js";
+import { hydrateRecordPage } from "./recordHydration.js";
 import {
   MAX_BYTES_READ,
   MAX_CURSOR_BYTES,
@@ -118,13 +119,18 @@ export async function explain(
       postFiltered: selected.postFiltered,
     };
   }
-  const rows = await ctx.db
+  const rows = await paginator(ctx.db, schema)
     .query("records")
     .withIndex("by_scopeId_and_tableId", (q) =>
       q.eq("scopeId", scopeId).eq("tableId", tableId),
     )
-    .take(SCAN_LIMIT + 1);
-  if (rows.length <= SCAN_LIMIT) return { kind: "scan", postFiltered: false };
+    .paginate({
+      numItems: SCAN_LIMIT + 1,
+      cursor: null,
+      maximumBytesRead: MAX_BYTES_READ,
+    });
+  if (rows.isDone && rows.page.length <= SCAN_LIMIT)
+    return { kind: "scan", postFiltered: false };
   const failed = await selectIndex(ctx, scopeId, tableId, query, "failed");
   if (failed) {
     fail("INDEX_NOT_READY", "A matching runtime index failed verification", {
@@ -274,9 +280,12 @@ async function selectIndex(
     if (rangeField && nextField !== rangeField) continue;
     if (query.orderBy) {
       const remaining = index.fieldIds.slice(equalityValues.length);
-      const fullMatch = sameIds(query.orderBy.fieldIds, index.fieldIds);
-      const remainingMatch = sameIds(query.orderBy.fieldIds, remaining);
-      if (!fullMatch && !remainingMatch) continue;
+      // Equality fields are constant throughout this range, regardless of where
+      // they occur in the requested ordering.
+      const requested = query.orderBy.fieldIds.filter(
+        (id) => !equality.has(id),
+      );
+      if (!sameIds(requested, remaining)) continue;
     }
     if (!query.orderBy && equalityValues.length === 0 && !rangeField) continue;
     const range = rangeField ? boundsFor(query.where, rangeField) : undefined;
@@ -370,7 +379,7 @@ async function indexedPage(
       )
     : null;
   const stream = buildEntryQuery(ctx, selected).order(direction);
-  const result = await paginateWithCursorGuard(
+  const initial = await paginateWithCursorGuard(
     () =>
       stream.paginate({
         numItems: pagination.pageSize,
@@ -381,8 +390,18 @@ async function indexedPage(
       }),
     pagination.cursor !== undefined || pagination.endCursor !== undefined,
   );
-  const hydrated = await Promise.all(
-    result.page.map((entry) => ctx.db.get("records", entry.recordId)),
+  const { result, records: hydrated } = await hydrateRecordPage(
+    ctx,
+    initial,
+    (count) =>
+      stream.paginate({
+        numItems: count,
+        cursor: cursor?.inner ?? null,
+        ...(endCursor ? { endCursor: endCursor.inner } : {}),
+        maximumRowsRead: count,
+        maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
+      }),
+    pagination.maximumBytesRead ?? MAX_BYTES_READ,
   );
   const hydratedEntries = result.page.map((entry, position) => ({
     entry,
@@ -610,13 +629,19 @@ async function scannedPage(
   schemaRev: number,
   failedIndexId?: Id<"indexDefinitions">,
 ) {
-  const records = await ctx.db
+  const scanned = await paginator(ctx.db, schema)
     .query("records")
     .withIndex("by_scopeId_and_tableId", (q) =>
       q.eq("scopeId", scopeId).eq("tableId", tableId),
     )
-    .take(SCAN_LIMIT + 1);
-  if (records.length > SCAN_LIMIT) {
+    .paginate({
+      numItems: SCAN_LIMIT + 1,
+      cursor: null,
+      maximumRowsRead: pagination.maximumRowsRead ?? SCAN_LIMIT + 1,
+      maximumBytesRead: pagination.maximumBytesRead ?? MAX_BYTES_READ,
+    });
+  const records = scanned.page;
+  if (!scanned.isDone || records.length > SCAN_LIMIT) {
     if (failedIndexId) {
       fail("INDEX_NOT_READY", "A matching runtime index failed verification", {
         indexId: failedIndexId,
@@ -652,6 +677,17 @@ async function scannedPage(
         direction,
       )
     : null;
+  const endCursor = pagination.endCursor
+    ? decodeCursor(
+        pagination.endCursor,
+        "scan",
+        scopeId,
+        tableId,
+        plan,
+        schemaRev,
+        direction,
+      )
+    : null;
   const filtered = records.filter((record) => matchesAll(record, query.where));
   filtered.sort((left, right) =>
     compareRecords(left, right, orderFields, direction),
@@ -668,15 +704,29 @@ async function scannedPage(
           ) > 0,
       )
     : filtered;
-  const page = afterCursor.slice(0, pagination.pageSize);
-  const isDone = afterCursor.length <= pagination.pageSize;
+  const bounded = endCursor
+    ? afterCursor.filter(
+        (record) =>
+          compareBoundary(
+            record,
+            orderFields,
+            endCursor.boundaryValues,
+            endCursor.recordId,
+            direction,
+          ) <= 0,
+      )
+    : afterCursor;
+  const page = endCursor ? bounded : bounded.slice(0, pagination.pageSize);
+  const isDone = endCursor ? false : afterCursor.length <= pagination.pageSize;
   const last = page.at(-1);
   return {
     page,
     isDone,
     continueCursor:
       isDone || !last
-        ? null
+        ? endCursor
+          ? pagination.endCursor!
+          : null
         : encodeCursor({
             version: 2,
             kind: "scan",
@@ -768,6 +818,17 @@ function suggestIndex(
   const combined = [...equality, ...ranges, ...(query.orderBy?.fieldIds ?? [])];
   const suggestion = [...new Set(combined)];
   if (suggestion.length === 0 || suggestion.length > 3) return null;
+  const equalityIds = new Set(equality);
+  const remaining = suggestion.filter((id) => !equalityIds.has(id));
+  if (
+    query.orderBy &&
+    !sameIds(
+      query.orderBy.fieldIds.filter((id) => !equalityIds.has(id)),
+      remaining,
+    )
+  )
+    return null;
+  if (ranges.length && remaining[0] !== ranges[0]) return null;
   return suggestion;
 }
 
@@ -900,7 +961,7 @@ function validatePagination(pagination: Pagination): void {
   }
 }
 
-async function paginateWithCursorGuard<Result>(
+export async function paginateWithCursorGuard<Result>(
   operation: () => Promise<Result>,
   hasCursor: boolean,
 ): Promise<Result> {

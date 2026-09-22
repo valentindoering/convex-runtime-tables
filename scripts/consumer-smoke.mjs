@@ -122,6 +122,7 @@ try {
       );
     }
     const lastRun = smokeRuns.at(-1);
+    await runLargeRecordFixture(writer, generatedApi.api.smoke, smokeScopeId);
     process.stdout.write(
       `${JSON.stringify({
         tarball: basename(tarball),
@@ -131,6 +132,7 @@ try {
         codegenFresh: before === after,
         runs: smokeRuns.length,
         preflight: "succeeded",
+        largeRecordBuildQueryPurge: "succeeded",
         cleanup: smokeRuns.every((run) => run.cleanup === "succeeded")
           ? "succeeded"
           : "failed",
@@ -225,6 +227,65 @@ async function runSmokeFixture(writer, subscriber, api, scopeId) {
 async function cleanupSmokeFixture(writer, api, scopeId, tableId) {
   await deleteSmokeTable(writer, api, scopeId, tableId);
   await assertSmokeScopeEmpty(writer, api, scopeId);
+}
+
+async function runLargeRecordFixture(writer, api, scopeId) {
+  const { tableId } = await writer.mutation(api.initialize, { scopeId });
+  try {
+    const expected = ["first"];
+    for (let n = 0; n < 30; n++) {
+      const key = `large-${String(n).padStart(2, "0")}`;
+      expected.push(key);
+      await writer.mutation(api.add, {
+        scopeId,
+        tableId,
+        key,
+        value: "x".repeat(600_000),
+      });
+    }
+    const { jobId } = await writer.mutation(api.buildLargeIndex, {
+      scopeId,
+      tableId,
+    });
+    const deadline = Date.now() + 120_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      const job = await writer.query(api.getJob, { scopeId, jobId });
+      if (job?.state === "succeeded") {
+        ready = true;
+        break;
+      }
+      if (!job || job.state === "failed" || job.state === "superseded")
+        throw new Error("Large-record index build failed");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!ready) throw new Error("Large-record index build timed out");
+    for (const direction of ["asc", "desc"]) {
+      const seen = [];
+      let cursor;
+      for (let pageNumber = 0; pageNumber < 40; pageNumber++) {
+        const page = await writer.query(api.largePage, {
+          scopeId,
+          tableId,
+          direction,
+          ...(cursor ? { cursor } : {}),
+        });
+        seen.push(...page.keys);
+        if (page.isDone) break;
+        if (!page.continueCursor || page.continueCursor === cursor)
+          throw new Error("Large-record pagination made no progress");
+        cursor = page.continueCursor;
+      }
+      const ordered =
+        direction === "asc"
+          ? [...expected].sort()
+          : [...expected].sort().reverse();
+      if (JSON.stringify(seen) !== JSON.stringify(ordered))
+        throw new Error("Large-record traversal mismatch");
+    }
+  } finally {
+    await cleanupSmokeFixture(writer, api, scopeId, tableId);
+  }
 }
 
 async function purgeSmokeScope(writer, api, scopeId) {
@@ -452,6 +513,32 @@ export const deleteTable = mutation({
       scopeId: args.scopeId,
       tableId: args.tableId,
     });
+  },
+});
+
+export const buildLargeIndex = mutation({
+  args: { scopeId: v.string(), tableId: v.string() },
+  returns: v.object({ indexId: v.string(), jobId: v.string() }),
+  handler: async (ctx, args) => {
+    const schema = await ctx.runQuery(components.runtimeTables.public.getTable, args);
+    return await ctx.runMutation(components.runtimeTables.public.createIndex, {
+      ...args, name: "by_key", fieldIds: [schema.fields.find((field) => field.key === "key")!._id], unique: false,
+    });
+  },
+});
+
+export const largePage = query({
+  args: { scopeId: v.string(), tableId: v.string(), direction: v.union(v.literal("asc"), v.literal("desc")), cursor: v.optional(v.string()) },
+  returns: v.object({ keys: v.array(v.string()), isDone: v.boolean(), continueCursor: v.union(v.null(), v.string()) }),
+  handler: async (ctx, args) => {
+    const schema = await ctx.runQuery(components.runtimeTables.public.getTable, { scopeId: args.scopeId, tableId: args.tableId });
+    const keyId = schema.fields.find((field) => field.key === "key")!._id;
+    const result = await ctx.runQuery(components.runtimeTables.public.queryRecords, {
+      scopeId: args.scopeId, tableId: args.tableId,
+      query: { where: [], orderBy: { fieldIds: [keyId], direction: args.direction } },
+      pagination: { pageSize: 100, ...(args.cursor ? { cursor: args.cursor } : {}) },
+    });
+    return { keys: result.page.map((record) => String(record.values[keyId])), isDone: result.isDone, continueCursor: result.continueCursor };
   },
 });
 
