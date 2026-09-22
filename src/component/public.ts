@@ -20,6 +20,7 @@ import {
 import {
   explain,
   paginateWithCursorGuard,
+  validateInnerCursor,
   queryRecords as executeQuery,
 } from "./planner.js";
 import schema from "./schema.js";
@@ -1053,6 +1054,7 @@ function decodeOperatorCursor(
       "INVALID_CURSOR",
       "Cursor does not belong to this scope or resource",
     );
+    validateInnerCursor(payload.inner);
     return payload;
   } catch (error) {
     if (error instanceof Error && error.name === "ConvexError") throw error;

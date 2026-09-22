@@ -1,4 +1,5 @@
 import { paginator } from "convex-helpers/server/pagination";
+import { jsonToConvex } from "convex/values";
 import type {
   GenericDocument,
   GenericIndexFields,
@@ -941,11 +942,38 @@ function decodeCursor(
         "INVALID_CURSOR",
         "Inner cursor is malformed",
       );
+      validateInnerCursor(payload.inner);
     }
     return payload;
   } catch (error) {
     if (error instanceof Error && error.name === "ConvexError") throw error;
     fail("INVALID_CURSOR", "Cursor is malformed");
+  }
+}
+
+// Our physical indexes contain only scalar slots, timestamps and string IDs.
+// Validate the helper's documented Convex-JSON encoding before its decoder
+// calls .map; syntactically valid non-array JSON must be INVALID_CURSOR too.
+export function validateInnerCursor(encoded: string | null): void {
+  if (encoded === null) return;
+  try {
+    const values = jsonToConvex(JSON.parse(encoded));
+    invariant(
+      Array.isArray(values) &&
+        values.length <= 8 &&
+        values.every(
+          (value) =>
+            value === null ||
+            typeof value === "string" ||
+            typeof value === "boolean" ||
+            (typeof value === "number" && Number.isFinite(value)),
+        ),
+      "INVALID_CURSOR",
+      "Inner cursor must encode scalar index keys",
+    );
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConvexError") throw error;
+    fail("INVALID_CURSOR", "Inner cursor is malformed");
   }
 }
 

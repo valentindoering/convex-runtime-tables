@@ -281,24 +281,69 @@ test("operator cursors reject malformed inner cursors with structured errors", a
     unique: false,
   });
   await t.finishAllScheduledFunctions(() => vi.runAllTimers());
-  for (const key of ["cursor", "endCursor"] as const) {
-    const malformed = (kind: string, resourceId: string) =>
-      `crt-op1:${encodeURIComponent(JSON.stringify({ version: 1, kind, scopeId, resourceId, inner: "garbage" }))}`;
-    await expect(
-      t.query(api.public.listTables, {
+  const defaultQuery: QuerySpec = { where: [] };
+  const indexedQuery: QuerySpec = {
+    where: [],
+    orderBy: { fieldIds: [b], direction: "asc" },
+  };
+  const recordCases = await Promise.all(
+    [defaultQuery, indexedQuery].map(async (query) => {
+      const first = await t.query(api.public.queryRecords, {
         scopeId,
-        pagination: { pageSize: 1, [key]: malformed("listTables", scopeId) },
-      }),
-    ).rejects.toThrow("INVALID_CURSOR");
-    await expect(
-      t.query(api.public.auditIndexEntries, {
-        scopeId,
-        indexId: index.indexId,
-        pagination: {
-          pageSize: 1,
-          [key]: malformed("auditIndexEntries", index.indexId),
-        },
-      }),
-    ).rejects.toThrow("INVALID_CURSOR");
+        tableId,
+        query,
+        pagination: { pageSize: 1 },
+      });
+      return {
+        query,
+        payload: JSON.parse(decodeURIComponent(first.continueCursor!.slice(5))),
+      };
+    }),
+  );
+  const malformedInners = [
+    "garbage",
+    "null",
+    "{}",
+    "123",
+    "true",
+    '"text"',
+    "[{}]",
+    "[[]]",
+    "[1e400]",
+    JSON.stringify(Array(9).fill(0)),
+    '[{"$integer":"AAAAAAAAAAA="}]',
+  ];
+  for (const inner of malformedInners) {
+    for (const key of ["cursor", "endCursor"] as const) {
+      const malformed = (kind: string, resourceId: string) =>
+        `crt-op1:${encodeURIComponent(JSON.stringify({ version: 1, kind, scopeId, resourceId, inner }))}`;
+      for (const { query, payload } of recordCases) {
+        const cursor = `crt2:${encodeURIComponent(JSON.stringify({ ...payload, inner }))}`;
+        await expect(
+          t.query(api.public.queryRecords, {
+            scopeId,
+            tableId,
+            query,
+            pagination: { pageSize: 1, [key]: cursor },
+          }),
+        ).rejects.toThrow("INVALID_CURSOR");
+      }
+      await expect(
+        t.query(api.public.listTables, {
+          scopeId,
+          pagination: { pageSize: 1, [key]: malformed("listTables", scopeId) },
+        }),
+      ).rejects.toThrow("INVALID_CURSOR");
+      await expect(
+        t.query(api.public.auditIndexEntries, {
+          scopeId,
+          indexId: index.indexId,
+          pagination: {
+            pageSize: 1,
+            [key]: malformed("auditIndexEntries", index.indexId),
+          },
+        }),
+      ).rejects.toThrow("INVALID_CURSOR");
+    }
   }
 });
