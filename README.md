@@ -3,9 +3,10 @@
 Runtime-defined tables, fields, scalar records, and secondary indexes for Convex
 applications.
 
-This repository is an unpublished `0.1.0-alpha.1` release candidate.
-`package.json` contains `private: true`, so npm will refuse publication until a
-release review removes that guard.
+`0.1.0-alpha.1` is a prerelease. Use the `alpha` distribution tag and pin an
+exact version in applications. Review the documented limits before storing
+important data. Publication is gated by exact-commit CI, hosted tests and
+release review.
 
 ## What it provides
 
@@ -35,17 +36,16 @@ This alpha does not provide joins, SQL, formulas, aggregates, full-text search,
 references with referential integrity, audit events, row permissions,
 attachments, or a spreadsheet engine.
 
-## Install locally
+## Install
 
-The package is not published. Run `npm run release:prepare` to build and inspect
-a local tarball, then install it in a consumer with:
+After the first release is available on npm:
 
 ```sh
-npm install /absolute/path/to/convex-runtime-tables/.release/convex-runtime-tables-0.1.0-alpha.1.tgz
+npm install --save-exact convex-runtime-tables@0.1.0-alpha.1
 ```
 
-After publication, the planned registry install command is
-`npm install convex-runtime-tables@alpha`. Mount the component:
+For unreleased changes, run `npm run release:prepare` and install the tarball in
+`.release/`. Mount the component:
 
 ```ts
 // convex/convex.config.ts

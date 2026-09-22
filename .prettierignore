@@ -2,6 +2,7 @@
 .claude/skills/
 .convex/
 dist/
+coverage/
 convex/_generated/
 example/convex/_generated/
 src/component/_generated/

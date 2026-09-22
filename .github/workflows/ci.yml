@@ -40,6 +40,5 @@ jobs:
         env:
           npm_config_registry: https://registry.npmjs.org/
         run: npm run test:consumer
-      - name: Confirm publishing stays disabled
-        run: |
-          node -e "const p=require('./package.json'); const names=['preversion','version','prepublishOnly','alpha','release']; if(p.private!==true || names.some((name)=>p.scripts[name]!=='node scripts/release-blocked.mjs')) process.exit(1)"
+      - name: Confirm alpha publication remains gated
+        run: node scripts/check-release.mjs --config-only

@@ -11,11 +11,7 @@ const destination = join(root, ".release");
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 assert.equal(manifest.name, "convex-runtime-tables");
 assert.match(manifest.version, /^0\.1\.0-alpha\.[1-9]\d*$/);
-assert.equal(
-  manifest.private,
-  true,
-  "Preparation must preserve the publish guard",
-);
+assert.equal(manifest.scripts.prepublishOnly, "node scripts/check-release.mjs");
 await mkdir(destination, { recursive: true });
 
 function run(command, args, capture = false) {
@@ -72,7 +68,7 @@ const report = {
   version: packed.version,
   intendedTag: "alpha",
   published: false,
-  publicationBlocked: true,
+  publicationRequiresGates: true,
   sourceCommit: run("git", ["rev-parse", "HEAD"], true).trim(),
   workingTreeChanges: run("git", ["status", "--porcelain"], true).trim(),
   tarball,

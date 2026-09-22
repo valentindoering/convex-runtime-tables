@@ -1,8 +1,11 @@
 # Release evidence
 
-Status (2026-09-22): npm prerelease preparation is in progress. Publication
-remains blocked pending a fresh release review and final-candidate hosted gates.
-The historical sections below describe earlier runs, not the current candidate.
+Status (2026-09-22): the user renewed approval to publish the public npm alpha.
+The remaining scan-cursor validation defect is fixed with malformed start/end
+boundary tests in both directions. Release scripts now require exact-commit CI,
+hosted gates, clean remote main and explicit review approval. Publication still
+waits for those gates; the earlier stopped attempt below is historical. The
+historical sections below describe earlier runs, not the current candidate.
 
 ## Release review repair, September 22
 

@@ -7,7 +7,12 @@
     "url": "https://github.com/valentindoering/convex-runtime-tables/issues"
   },
   "version": "0.1.0-alpha.1",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha",
+    "registry": "https://registry.npmjs.org/"
+  },
   "license": "Apache-2.0",
   "keywords": [
     "convex",
@@ -42,9 +47,9 @@
     "prepare": "npm run build",
     "release:prepare": "node scripts/prepare-release.mjs",
     "preversion": "node scripts/release-blocked.mjs",
-    "prepublishOnly": "node scripts/release-blocked.mjs",
-    "alpha": "node scripts/release-blocked.mjs",
-    "release": "node scripts/release-blocked.mjs",
+    "prepublishOnly": "node scripts/check-release.mjs",
+    "alpha": "node scripts/publish-alpha.mjs",
+    "release": "node scripts/publish-alpha.mjs",
     "version": "node scripts/release-blocked.mjs"
   },
   "files": [

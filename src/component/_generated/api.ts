@@ -17,6 +17,7 @@ import type * as maintenance from "../maintenance.js";
 import type * as normalization from "../normalization.js";
 import type * as planner from "../planner.js";
 import type * as public_ from "../public.js";
+import type * as recordHydration from "../recordHydration.js";
 import type * as validation from "../validation.js";
 import type * as validators from "../validators.js";
 
@@ -37,6 +38,7 @@ const fullApi: ApiFromModules<{
   normalization: typeof normalization;
   planner: typeof planner;
   public: typeof public_;
+  recordHydration: typeof recordHydration;
   validation: typeof validation;
   validators: typeof validators;
 }> = anyApi as any;

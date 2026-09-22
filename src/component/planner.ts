@@ -675,6 +675,7 @@ async function scannedPage(
         plan,
         schemaRev,
         direction,
+        orderFields.length,
       )
     : null;
   const endCursor = pagination.endCursor
@@ -686,6 +687,7 @@ async function scannedPage(
         plan,
         schemaRev,
         direction,
+        orderFields.length,
       )
     : null;
   const filtered = records.filter((record) => matchesAll(record, query.where));
@@ -875,6 +877,7 @@ function decodeCursor(
   plan: string,
   schemaRev: number,
   direction: "asc" | "desc",
+  boundaryLength: number,
 ): ScanCursor;
 function decodeCursor(
   encoded: string,
@@ -884,6 +887,7 @@ function decodeCursor(
   plan: string,
   schemaRev: number,
   direction: "asc" | "desc",
+  boundaryLength?: number,
 ): CursorPayload {
   try {
     invariant(
@@ -914,6 +918,30 @@ function decodeCursor(
       "INVALID_CURSOR",
       "Cursor does not belong to this scope or query",
     );
+    if (payload.kind === "scan") {
+      invariant(
+        Array.isArray(payload.boundaryValues) &&
+          payload.boundaryValues.length === boundaryLength &&
+          payload.boundaryValues.every(
+            (value: unknown) =>
+              value === null ||
+              typeof value === "boolean" ||
+              typeof value === "string" ||
+              (typeof value === "number" && Number.isFinite(value)),
+          ) &&
+          typeof payload.recordId === "string" &&
+          payload.recordId.length > 0 &&
+          payload.recordId.length <= 100,
+        "INVALID_CURSOR",
+        "Scan cursor boundary is malformed",
+      );
+    } else {
+      invariant(
+        payload.inner === null || typeof payload.inner === "string",
+        "INVALID_CURSOR",
+        "Inner cursor is malformed",
+      );
+    }
     return payload;
   } catch (error) {
     if (error instanceof Error && error.name === "ConvexError") throw error;

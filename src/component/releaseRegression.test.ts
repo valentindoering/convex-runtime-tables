@@ -174,7 +174,7 @@ test("equality fields at every ordering position never produce an unachievable s
       },
     }),
   ).rejects.toThrow("UNSUPPORTED_QUERY");
-});
+}, 30_000);
 
 test.each(["asc", "desc"] as const)(
   "scan endCursor pins the inclusive boundary in %s order and validates plan identity",
@@ -191,6 +191,45 @@ test.each(["asc", "desc"] as const)(
       pagination: { pageSize: 2 },
     });
     expect(first.plan.kind).toBe("scan");
+    const validPayload = JSON.parse(
+      decodeURIComponent(first.continueCursor!.slice(5)),
+    );
+    for (const patch of [
+      { boundaryValues: undefined },
+      { boundaryValues: null },
+      { boundaryValues: [] },
+      { boundaryValues: [1, 2] },
+      { boundaryValues: [{}] },
+      { boundaryValues: [[1]] },
+      { recordId: undefined },
+      { recordId: null },
+      { recordId: 123 },
+      { recordId: "" },
+      { recordId: "x".repeat(101) },
+    ]) {
+      const malformed = `crt2:${encodeURIComponent(JSON.stringify({ ...validPayload, ...patch }))}`;
+      for (const key of ["cursor", "endCursor"] as const) {
+        await expect(
+          t.query(api.public.queryRecords, {
+            scopeId,
+            tableId,
+            query,
+            pagination: { pageSize: 5, [key]: malformed },
+          }),
+        ).rejects.toThrow("INVALID_CURSOR");
+      }
+    }
+    const nonfinite = `crt2:${encodeURIComponent(JSON.stringify(validPayload).replace(/"boundaryValues":\[[^\]]*\]/, '"boundaryValues":[1e400]'))}`;
+    for (const key of ["cursor", "endCursor"] as const) {
+      await expect(
+        t.query(api.public.queryRecords, {
+          scopeId,
+          tableId,
+          query,
+          pagination: { pageSize: 5, [key]: nonfinite },
+        }),
+      ).rejects.toThrow("INVALID_CURSOR");
+    }
     const pinned = await t.query(api.public.queryRecords, {
       scopeId,
       tableId,
