@@ -34,6 +34,8 @@ jobs:
       - run: npm run test:race
       - run: npm run test:coverage
       - run: npm run build
+      - name: Inspect alpha tarball exports and file list
+        run: npm run release:prepare
       - name: Packed clean-consumer, codegen, query, mutation, and reactivity
         env:
           npm_config_registry: https://registry.npmjs.org/

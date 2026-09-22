@@ -1,8 +1,44 @@
 # Release evidence
 
-Status: publication remains blocked. The deterministic local gates are green.
-The required 100,000-row cloud-development gate has not run against this
-revision, so this document does not claim release readiness.
+Status (2026-09-22): npm prerelease preparation is in progress. Publication
+remains blocked pending a fresh release review and working hosted credentials.
+The historical sections below describe earlier runs, not the current candidate.
+
+## Verified publishing status, 2026-09-22
+
+- Public npm lookup for `convex-runtime-tables` returned E404. No public package
+  was found under that name; this does not reserve the name.
+- `npm whoami --registry=https://registry.npmjs.org` returned E401. Publishing
+  needs a valid npm login or an explicitly configured trusted publisher.
+- [CI run 33532204130](https://github.com/valentindoering/convex-runtime-tables/actions/runs/33532204130)
+  succeeded for `a2843691041d2095ceec46cde0b78b4f4ba53d47`.
+- [Hosted run 33726911021](https://github.com/valentindoering/convex-runtime-tables/actions/runs/33726911021)
+  succeeded for the same commit on September 3. It passed the packed consumer,
+  real two-client subscription, codegen freshness, and two cleanup runs.
+- The 100,000-row suite reported 99,990 exact surviving records, 99,990 entries
+  in each of two indexes, zero verification mismatches, zero failures, and zero
+  remaining tables after cleanup. Total wall time was 3,047,109 ms (50m 47s).
+  Page latency was p50 263.67 ms / p95 282.489 ms; first/deep pages read 206
+  documents each. Both build jobs completed in 2,433 batches with zero retries.
+  Document amplification was two sidecar entries per record; byte storage and
+  server-internal OCC retries were not measured.
+- [Latest hosted run 35701124321](https://github.com/valentindoering/convex-runtime-tables/actions/runs/35701124321)
+  failed on September 22 with
+  `401 AuthenticationFailed: Invalid Convex deploy key` for the isolated
+  `perfect-lark-558` test deployment. The scale step did not run. Historical
+  success does not make this latest gate green.
+
+See [npm-release.md](./npm-release.md) for the concrete alpha release procedure.
+
+Candidate preparation on September 22 passed formatting, lint, typecheck, build,
+and 104 tests across 9 files in 13.94 seconds. A clean local packed consumer
+installed `0.1.0-alpha.1`, mounted the component, regenerated without drift,
+performed a mutation and query, received a second-client reactive update, and
+completed both fixture runs with exact cleanup. `release:prepare` checks all
+exports and required documentation across 107 packed files. The final candidate
+also restores the historical alpha.0 changelog entry; this documentation-only
+addition does not change the code exercised by that consumer run. These local
+results do not replace a fresh hosted gate or release review.
 
 ## Local deterministic gates
 

@@ -6,7 +6,7 @@
   "bugs": {
     "url": "https://github.com/valentindoering/convex-runtime-tables/issues"
   },
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "license": "Apache-2.0",
   "keywords": [
@@ -40,6 +40,7 @@
     "upload:showcase": "static-hosting upload --dist example/dist --component selfHosting --spa",
     "changeset": "changeset",
     "prepare": "npm run build",
+    "release:prepare": "node scripts/prepare-release.mjs",
     "preversion": "node scripts/release-blocked.mjs",
     "prepublishOnly": "node scripts/release-blocked.mjs",
     "alpha": "node scripts/release-blocked.mjs",
@@ -47,8 +48,11 @@
     "version": "node scripts/release-blocked.mjs"
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
     "src",
+    "docs/host-integration.md",
+    "docs/query-contract.md",
     "!src/**/*.test.ts"
   ],
   "exports": {
