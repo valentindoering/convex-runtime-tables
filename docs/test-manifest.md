@@ -34,6 +34,13 @@ suggestions, large unfiltered structural pagination, nested agent JSON Schema,
 malformed/adversarial agent requests, formatting, lint, typecheck, coverage,
 build, and generated-file freshness.
 
+The C3 regression in `src/component/releaseRegression.test.ts`,
+`%s cursor keys cannot exceed their physical index's %i slots`, covers both
+start and end cursors for structural record listing, indexed record queries,
+table listing, and sidecar auditing. It rejects every oversized key length up to
+ten slots, while preserving complete and prefix keys. The asserted physical key
+lengths (4, 8, 4, 5) also detect schema/encoding drift.
+
 Focused release-blocker regressions are
 `indexed reads fail closed on stale and orphaned sidecars` and
 `a formerly ready unique index blocks writes until repaired` in

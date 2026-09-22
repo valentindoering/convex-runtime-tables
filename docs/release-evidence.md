@@ -7,6 +7,24 @@ hosted gates, clean remote main and explicit review approval. Publication still
 waits for those gates; the earlier stopped attempt below is historical. The
 historical sections below describe earlier runs, not the current candidate.
 
+The subsequent review found a second inner-key shape defect at `b0242cf`: the
+shared eight-slot ceiling exceeded the table/listing/audit indexes. The renewed
+repair derives each ceiling from the physical schema through the same helper
+used by pagination. Four API-level regression cases cover all key lengths
+through ten for both boundaries and preserve valid prefix keys. The full suite
+now passes 114 tests across ten files. Final-commit CI and the hosted scale gate
+still have to pass before publication.
+
+The completed initial Claude review used Opus 5 (`claude-opus-5`), session
+`2ab90404-703e-47aa-a2ad-c58c0ae7d02f`, and returned conditional alpha approval
+with no verified blocker. Its compatibility condition was checked against the
+published Convex 1.44.0 types: `convex/values` exports `getConvexSize`. The
+nightly workflow has no cleanup-only or skipped-success path. The paginator
+source enforces `maximumRowsRead` even with `endCursor`; pinned hydration must
+therefore stop at the last hydrated record. Multiple distinct range fields are
+rejected before index selection. These checks do not replace the pending
+exact-commit deployment gates or the repair's final regression review.
+
 ## Release review repair, September 22
 
 Final regression review of `41521ba`: **NO-GO**. An identity-matching scan

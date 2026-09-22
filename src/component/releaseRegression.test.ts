@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import { initConvexTest } from "./setup.test.js";
-import type { QuerySpec } from "./planner.js";
+import type { Pagination, QuerySpec } from "./planner.js";
 import { convexTest } from "convex-test";
 import schema from "./schema.js";
 import { modules } from "./setup.test.js";
@@ -347,3 +347,88 @@ test("operator cursors reject malformed inner cursors with structured errors", a
     }
   }
 });
+
+test.each([
+  ["table", 4],
+  ["index", 8],
+  ["listTables", 4],
+  ["auditIndexEntries", 5],
+] as const)(
+  "%s cursor keys cannot exceed their physical index's %i slots",
+  async (kind, keyCount) => {
+    const { t, scopeId, tableId, b } = await fixture(3);
+    await t.mutation(api.public.createTable, {
+      scopeId,
+      slug: "second",
+      name: "Second",
+      fields: [],
+    });
+    const index = await t.mutation(api.public.createIndex, {
+      scopeId,
+      tableId,
+      name: "by_b",
+      fieldIds: [b],
+      unique: false,
+    });
+    await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const queryPage = (pagination: Pagination) => {
+      if (kind === "listTables") {
+        return t.query(api.public.listTables, { scopeId, pagination });
+      }
+      if (kind === "auditIndexEntries") {
+        return t.query(api.public.auditIndexEntries, {
+          scopeId,
+          indexId: index.indexId,
+          pagination,
+        });
+      }
+      return t.query(api.public.queryRecords, {
+        scopeId,
+        tableId,
+        pagination,
+        query: {
+          where: [],
+          ...(kind === "index"
+            ? { orderBy: { fieldIds: [b], direction: "asc" as const } }
+            : {}),
+        },
+      });
+    };
+    const first = await queryPage({ pageSize: 1 });
+    expect(first.continueCursor).not.toBeNull();
+    const prefix = kind === "table" || kind === "index" ? "crt2:" : "crt-op1:";
+    const payload = JSON.parse(
+      decodeURIComponent(first.continueCursor!.slice(prefix.length)),
+    );
+    const keys = JSON.parse(payload.inner) as unknown[];
+    // Lock the tests to the actual helper encoding, including its two system keys.
+    expect(keys).toHaveLength(keyCount);
+    const encode = (innerKeys: unknown[]) =>
+      `${prefix}${encodeURIComponent(JSON.stringify({ ...payload, inner: JSON.stringify(innerKeys) }))}`;
+    for (const boundary of ["cursor", "endCursor"] as const) {
+      // Valid complete keys and the helper's supported prefix boundaries still work.
+      for (let length = 0; length <= keyCount; length++) {
+        await expect(
+          queryPage({ pageSize: 1, [boundary]: encode(keys.slice(0, length)) }),
+        ).resolves.toHaveProperty("page");
+      }
+      for (let length = keyCount + 1; length <= 10; length++) {
+        await expect(
+          queryPage({
+            pageSize: 1,
+            [boundary]: encode([
+              ...keys,
+              ...Array(length - keyCount).fill("extra"),
+            ]),
+          }),
+        ).rejects.toThrow("INVALID_CURSOR");
+      }
+    }
+    const second = await queryPage({
+      pageSize: 1,
+      cursor: first.continueCursor!,
+    });
+    expect(second.page).toHaveLength(1);
+    expect(second.page).not.toEqual(first.page);
+  },
+);

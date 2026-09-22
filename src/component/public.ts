@@ -1,4 +1,5 @@
 import { paginator } from "convex-helpers/server/pagination";
+import { getIndexFields } from "convex-helpers/server/stream";
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -1054,7 +1055,16 @@ function decodeOperatorCursor(
       "INVALID_CURSOR",
       "Cursor does not belong to this scope or resource",
     );
-    validateInnerCursor(payload.inner);
+    validateInnerCursor(
+      payload.inner,
+      kind === "listTables"
+        ? getIndexFields("tables", "by_scopeId_and_slug", schema).length
+        : getIndexFields(
+            "indexEntries",
+            "by_scopeId_and_indexId_and_recordId",
+            schema,
+          ).length,
+    );
     return payload;
   } catch (error) {
     if (error instanceof Error && error.name === "ConvexError") throw error;
