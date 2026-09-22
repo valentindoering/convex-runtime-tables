@@ -6,6 +6,24 @@ The historical sections below describe earlier runs, not the current candidate.
 
 ## Release review repair, September 22
 
+Final regression review of `41521ba`: **NO-GO**. An identity-matching scan
+cursor can omit `boundaryValues` and throw raw `TypeError` in both start/end
+cursor paths. `decodeCursor` must validate its discriminated payload, scalar
+array length/types and record ID before returning. The initial repair round is
+complete; this remaining cursor-validation defect stopped the landing attempt.
+No publication, public visibility change or push occurred.
+
+The 100k hosted run `mucj1odt` was started, then deliberately canceled after
+this blocker was confirmed. It is **not a passing scale gate**. Cleanup was
+requested for its synthetic table only. The new development deployment and CI
+credential expire within four days and must be refreshed before later runs.
+
+Claude Opus 5 (`claude-opus-5`) was authenticated interactively to a Claude Team
+subscription, session `a7ade6dc-3fb5-47fa-825a-adce34deca4b`, with tools
+disabled. Its review was canceled without a verdict when the independent Codex
+regression review blocked landing. No Claude approval is claimed. No CI run was
+triggered for this unpushed candidate. Repository visibility remains private.
+
 The fresh review found impossible index suggestions when equality fields occur
 inside the requested ordering, ignored scan `endCursor`, unstructured malformed
 operator-cursor errors, and full-record read amplification past transaction
