@@ -15,3 +15,7 @@ node_modules
 *.tsbuildinfo
 .release/
 coverage/
+
+.codex-runtime/
+
+.convex/

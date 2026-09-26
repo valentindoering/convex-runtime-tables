@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -141,6 +141,7 @@ function localEnvironment(config) {
 
 async function writeRuntimeEnv(config) {
   assertLocalRuntime(config);
+  await mkdir(dirname(runtimeEnvFile), { recursive: true });
   await writeFile(
     runtimeEnvFile,
     [

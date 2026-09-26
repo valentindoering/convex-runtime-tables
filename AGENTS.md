@@ -11,3 +11,10 @@ Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
 
 <!-- convex-ai-end -->
+
+## Codex worktrees
+
+The checked-in environment runs `npm ci` and starts this worktree's isolated
+local Convex and showcase. Use `node scripts/worktree-dev.mjs status` for its
+URL, `start` to reuse it, and `stop` to stop only its processes. Runtime
+configuration and logs stay ignored.

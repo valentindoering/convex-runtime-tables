@@ -1,0 +1,30 @@
+version = 1
+name = "convex-runtime-tables"
+
+[setup]
+script = '''
+set -euo pipefail
+npm ci
+node scripts/worktree-dev.mjs start
+'''
+
+[cleanup]
+script = '''
+set -euo pipefail
+node scripts/worktree-dev.mjs stop
+'''
+
+[[actions]]
+name = "Start app"
+icon = "run"
+command = "node scripts/worktree-dev.mjs start"
+
+[[actions]]
+name = "App status"
+icon = "tool"
+command = "node scripts/worktree-dev.mjs status"
+
+[[actions]]
+name = "Stop app"
+icon = "tool"
+command = "node scripts/worktree-dev.mjs stop"
