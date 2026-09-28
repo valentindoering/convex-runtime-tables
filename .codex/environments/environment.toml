@@ -11,6 +11,7 @@ node scripts/worktree-dev.mjs start
 [cleanup]
 script = '''
 set -euo pipefail
+python3 .codex/tailnet_review.py down
 node scripts/worktree-dev.mjs stop
 '''
 
@@ -22,9 +23,9 @@ command = "node scripts/worktree-dev.mjs start"
 [[actions]]
 name = "App status"
 icon = "tool"
-command = "node scripts/worktree-dev.mjs status"
+command = "node scripts/worktree-dev.mjs status && python3 .codex/tailnet_review.py status"
 
 [[actions]]
 name = "Stop app"
 icon = "tool"
-command = "node scripts/worktree-dev.mjs stop"
+command = "python3 .codex/tailnet_review.py down && node scripts/worktree-dev.mjs stop"

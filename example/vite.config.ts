@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   envDir: "../",
   plugins: [react()],
+  server: { allowedHosts: [".ts.net"] },
   resolve: {
     conditions: ["@convex-dev/component-source"],
   },

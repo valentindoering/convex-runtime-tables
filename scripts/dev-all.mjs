@@ -24,7 +24,8 @@ const localConfigFile = join(
 const runtime = resolveRuntime();
 const convexVersion = commandOutput(convexExecutable, ["--version"]);
 assertLocalRuntime(runtime);
-const environment = localEnvironment(runtime);
+const review = tailnetReview("up", runtime.ports);
+const environment = localEnvironment(runtime, review);
 let stopping = false;
 let backendReady = false;
 let frontendReady = false;
@@ -33,9 +34,9 @@ let children = [];
 
 try {
   await assertPortsAvailable(Object.values(runtime.ports));
-  await writeRuntimeEnv(runtime);
+  await writeRuntimeEnv(runtime, review);
   await ensureProjectLocalConfig();
-  await writeRuntimeEnv(runtime);
+  await writeRuntimeEnv(runtime, review);
 
   children = [
     start(
@@ -115,7 +116,24 @@ function commandOutput(executable, args) {
   return result.stdout.trim();
 }
 
-function localEnvironment(config) {
+function tailnetReview(action, ports) {
+  const args = [".codex/tailnet_review.py", action, "--root", repository, "--json"];
+  if (ports) for (const [name, port] of Object.entries(ports))
+    args.push("--service", `${name}=${port}`);
+  const result = spawnSync("python3", args, { cwd: repository, encoding: "utf8" });
+  if (result.status !== 0) {
+    process.stderr.write(`Tailnet review unavailable: ${result.stderr.trim()}\n`);
+    return {};
+  }
+  try {
+    return JSON.parse(result.stdout || "{}");
+  } catch {
+    process.stderr.write("Tailnet review returned invalid JSON; using local URLs.\n");
+    return {};
+  }
+}
+
+function localEnvironment(config, review) {
   const env = { ...process.env };
   for (const key of [
     "CONVEX_DEPLOY_KEY",
@@ -133,13 +151,13 @@ function localEnvironment(config) {
     CONVEX_DEPLOYMENT: config.deployment,
     CONVEX_URL: config.convexUrl,
     CONVEX_SITE_URL: config.siteUrl,
-    VITE_CONVEX_URL: config.convexUrl,
-    VITE_CONVEX_SITE_URL: config.siteUrl,
+    VITE_CONVEX_URL: review.convex ?? config.convexUrl,
+    VITE_CONVEX_SITE_URL: review.site ?? config.siteUrl,
     NO_COLOR: "1",
   };
 }
 
-async function writeRuntimeEnv(config) {
+async function writeRuntimeEnv(config, review) {
   assertLocalRuntime(config);
   await mkdir(dirname(runtimeEnvFile), { recursive: true });
   await writeFile(
@@ -148,8 +166,8 @@ async function writeRuntimeEnv(config) {
       `CONVEX_DEPLOYMENT=${config.deployment}`,
       `CONVEX_URL=${config.convexUrl}`,
       `CONVEX_SITE_URL=${config.siteUrl}`,
-      `VITE_CONVEX_URL=${config.convexUrl}`,
-      `VITE_CONVEX_SITE_URL=${config.siteUrl}`,
+      `VITE_CONVEX_URL=${review.convex ?? config.convexUrl}`,
+      `VITE_CONVEX_SITE_URL=${review.site ?? config.siteUrl}`,
       "",
     ].join("\n"),
     { mode: 0o600 },
@@ -253,6 +271,7 @@ function printReadiness() {
       `Local Convex target: ${runtime.convexUrl}`,
       `Local Convex instance: ${runtime.instanceName}`,
       `Showcase ready: ${runtime.showcaseUrl}`,
+      ...(review.vite ? [`Tailnet showcase: ${review.vite}/`] : []),
       "",
     ].join("\n"),
   );
@@ -288,6 +307,7 @@ async function stopAll(exitCode) {
         }),
     ),
   );
+  tailnetReview("down");
   process.exit(exitCode);
 }
 
