@@ -132,7 +132,8 @@ def _prune_missing_roots(config: dict, current: Path) -> None:
             path.unlink(missing_ok=True)
 
 
-def manage(root: Path, action: str, services: dict[str, int] | None = None) -> dict[str, str]:
+def manage(root: Path, action: str, services: dict[str, int] | None = None,
+           reconcile: bool = False) -> dict[str, str]:
     """Start, inspect, or stop only this root's Serve endpoints.
 
     Returns advertised URLs. Missing/disconnected Tailscale is a normal no-op.
@@ -228,6 +229,17 @@ def manage(root: Path, action: str, services: dict[str, int] | None = None) -> d
                 old.pop(name)
             _write(path, {"root": str(root), "services": old})
             return {}
+        if reconcile:
+            for name, value in list(old.items()):
+                if name in services:
+                    continue
+                if _matches(config, value["external"], value["internal"]):
+                    result = _run("serve", f"--https={value['external']}", "off")
+                    if result.returncode:
+                        print(f"Could not stop retired Tailnet {name}: {result.stderr.strip()}", file=sys.stderr)
+                        continue
+                old.pop(name)
+            _write(path, {"root": str(root), "services": old})
         active = {name: value for name, value in old.items() if name in services}
         _print_links(host, {"services": active})
         return {name: f"https://{host}:{value['external']}" for name, value in active.items()}
