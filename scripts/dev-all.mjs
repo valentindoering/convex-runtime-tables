@@ -117,18 +117,32 @@ function commandOutput(executable, args) {
 }
 
 function tailnetReview(action, ports) {
-  const args = [".codex/tailnet_review.py", action, "--root", repository, "--json"];
-  if (ports) for (const [name, port] of Object.entries(ports))
-    args.push("--service", `${name}=${port}`);
-  const result = spawnSync("python3", args, { cwd: repository, encoding: "utf8" });
+  const args = [
+    ".codex/tailnet_review.py",
+    action,
+    "--root",
+    repository,
+    "--json",
+  ];
+  if (ports)
+    for (const [name, port] of Object.entries(ports))
+      args.push("--service", `${name}=${port}`);
+  const result = spawnSync("python3", args, {
+    cwd: repository,
+    encoding: "utf8",
+  });
   if (result.status !== 0) {
-    process.stderr.write(`Tailnet review unavailable: ${result.stderr.trim()}\n`);
+    process.stderr.write(
+      `Tailnet review unavailable: ${result.stderr.trim()}\n`,
+    );
     return {};
   }
   try {
     return JSON.parse(result.stdout || "{}");
   } catch {
-    process.stderr.write("Tailnet review returned invalid JSON; using local URLs.\n");
+    process.stderr.write(
+      "Tailnet review returned invalid JSON; using local URLs.\n",
+    );
     return {};
   }
 }
