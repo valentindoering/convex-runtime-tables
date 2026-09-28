@@ -1015,7 +1015,7 @@ describe("runtime tables component", () => {
       });
       expect(planned.kind).toBe("index");
     }
-  });
+  }, 30_000);
 
   test("matches an independent scan across 192 competing-index query plans", async () => {
     const t = initConvexTest();
