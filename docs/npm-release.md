@@ -89,6 +89,15 @@ To check the trust configuration without publishing, dispatch
 the real GitHub-to-npm token exchange and discards the token. It does not run
 the release gates and cannot certify a package candidate.
 
+Enable `Allow npm dist-tag` on the same npm trusted publisher so the workflow
+can remove an unintended `latest` tag after publishing. This permission applies
+to all package tags; the workflow limits removal to `latest` pointing at an
+already published alpha whose tarball and integrity match its inspected
+manifest. It refuses to remove `latest` from any other version. To retry this
+cleanup without publishing, run
+`gh workflow run release.yml --ref main -f operation=repair-tags`. That
+operation cannot publish or approve a new candidate.
+
 Never republish an existing version. Advance the alpha version and changelog,
 then rerun CI, hosted gates, and review for the resulting main commit.
 
