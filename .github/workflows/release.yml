@@ -1,0 +1,90 @@
+name: Publish alpha
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description:
+          Publish a reviewed alpha or check npm OIDC without publishing
+        type: choice
+        options: [publish, check-auth]
+        default: publish
+      reviewed_sha:
+        description:
+          Full main commit SHA explicitly approved by a fresh release review
+        type: string
+      review_url:
+        description: Link to the fresh release review and gate evidence
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: npm-alpha-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CRT_RELEASE_REVIEW_SHA: ${{ inputs.reviewed_sha }}
+      CRT_RELEASE_REVIEW_URL: ${{ inputs.review_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Require explicit review for publication
+        if: inputs.operation == 'publish'
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          assert.match(process.env.CRT_RELEASE_REVIEW_SHA, /^[a-f0-9]{40}$/);
+          assert.equal(process.env.CRT_RELEASE_REVIEW_SHA, process.env.GITHUB_SHA);
+          const review = new URL(process.env.CRT_RELEASE_REVIEW_URL);
+          assert.equal(review.protocol, 'https:');
+          NODE
+      - run: npm ci
+      - name: Require exact-commit CI and hosted release gates
+        if: inputs.operation == 'publish'
+        run: node scripts/check-release.mjs
+      - name: Check trusted publisher authentication
+        run: node scripts/check-npm-oidc.mjs
+      - name: Publish inspected alpha tarball with npm OIDC
+        if: inputs.operation == 'publish'
+        env:
+          npm_config_provenance: "true"
+        run: npm run alpha
+      - name: Verify registry version, alpha tag, and tarball integrity
+        if: inputs.operation == 'publish'
+        run: node scripts/verify-published.mjs
+      - name: Install registry package and verify two-client reactivity
+        if: inputs.operation == 'publish'
+        run: node scripts/consumer-smoke.mjs --published
+      - name: Save release evidence
+        if: inputs.operation == 'publish'
+        env:
+          REVIEW_URL: ${{ inputs.review_url }}
+        run: |
+          printf 'Review: %s\n' "$REVIEW_URL" >> "$GITHUB_STEP_SUMMARY"
+          cat .release/verification.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: inputs.operation == 'publish' && always()
+        with:
+          name: alpha-release-evidence
+          path: |
+            .release/manifest.json
+            .release/verification.json
+            .release/*.tgz
+          if-no-files-found: ignore

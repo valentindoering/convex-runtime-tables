@@ -18,6 +18,15 @@ const temporary = await mkdtemp(
 );
 const consumer = join(temporary, "consumer");
 const packDirectory = join(temporary, "pack");
+const publishedGate = process.argv.includes("--published");
+const releaseManifest = publishedGate
+  ? JSON.parse(
+      await readFile(join(repository, ".release/manifest.json"), "utf8"),
+    )
+  : undefined;
+const registryPackage = publishedGate
+  ? `${releaseManifest.name}@${releaseManifest.version}`
+  : undefined;
 const hostedGate =
   process.env.CONVEX_HOSTED_GATE === "1" ||
   Boolean(process.env.CONVEX_DEPLOY_KEY);
@@ -35,7 +44,12 @@ try {
   await mkdir(packDirectory, { recursive: true });
   run(
     "npm",
-    ["pack", "--pack-destination", packDirectory],
+    [
+      "pack",
+      ...(publishedGate ? [registryPackage] : []),
+      "--pack-destination",
+      packDirectory,
+    ],
     repository,
     baseEnvironment,
   );
@@ -44,6 +58,14 @@ try {
   );
   if (!tarballName) throw new Error("npm pack did not produce a tarball");
   const tarball = join(packDirectory, tarballName);
+  if (publishedGate) {
+    if (
+      createHash("sha256")
+        .update(await readFile(tarball))
+        .digest("hex") !== releaseManifest.sha256
+    )
+      throw new Error("Registry tarball differs from the inspected release");
+  }
   await assertProductionTarball(tarball, temporary);
 
   await writeConsumerFiles(consumer);
@@ -53,7 +75,7 @@ try {
       "install",
       "--ignore-scripts",
       "--legacy-peer-deps",
-      tarball,
+      publishedGate ? registryPackage : tarball,
       "convex@1.45.0",
       "vite@8.2.0",
       "typescript@6.0.2",
@@ -61,6 +83,23 @@ try {
     consumer,
     baseEnvironment,
   );
+
+  if (publishedGate) {
+    const lock = JSON.parse(
+      await readFile(join(consumer, "package-lock.json"), "utf8"),
+    );
+    const installed = lock.packages[`node_modules/${releaseManifest.name}`];
+    if (
+      installed.version !== releaseManifest.version ||
+      installed.integrity !== releaseManifest.integrity ||
+      installed.resolved !==
+        `https://registry.npmjs.org/${releaseManifest.name}/-/${releaseManifest.name}-${releaseManifest.version}.tgz`
+    )
+      throw new Error(
+        "Registry installation version, URL, or integrity differs from the release",
+      );
+    console.log(`REGISTRY_INSTALL ${JSON.stringify(installed)}`);
+  }
 
   const environment = {
     ...baseEnvironment,

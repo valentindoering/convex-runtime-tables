@@ -1,4 +1,4 @@
-# First npm release
+# npm alpha releases
 
 Prepared name/version: `convex-runtime-tables@0.1.0-alpha.1`. Distribution tag:
 `alpha`. The GitHub repository must be public before publication; the npm
@@ -39,9 +39,8 @@ consumer or hosted gates. No preparation command publishes the package.
    cleanup to pass. Link both logs in release evidence.
 3. Complete a fresh release review of the exact candidate. Do not claim a
    prerelease approval establishes production-authoritative readiness.
-4. Recheck the intended npm publisher immediately before publication. The latest
-   September 22 check succeeded as `valentindoering`; the package name returned
-   E404 and has not been published.
+4. Record the approved full commit SHA and a link to the release review. The
+   publisher is the repository's `release.yml` workflow through npm OIDC.
 
 ## Publish after the gates pass
 
@@ -58,6 +57,40 @@ rebuilds, packs, verifies the artifact hash and publishes that exact tarball
 under `alpha` with public access. Verify the registry version, integrity, and
 dist-tag, then install the published version into a clean consumer and run the
 query, mutation, and subscription smoke tests.
+
+## CI publishing
+
+Dispatch `release.yml` on `main` after completing the fresh review and both
+workflows for the candidate:
+
+```sh
+gh workflow run release.yml --ref main \
+  -f operation=publish \
+  -f reviewed_sha=<approved-full-commit-sha> \
+  -f review_url=<https-link-to-release-review>
+```
+
+The workflow rejects an absent or different reviewed SHA. It runs the existing
+release guard and guarded publisher, verifies registry tags and tarball hashes,
+and installs the published version into the two-client consumer. npm provenance
+is enabled for this path. Do not set `NODE_AUTH_TOKEN` or add an `NPM_TOKEN`
+secret; npm authenticates using GitHub's short-lived OIDC identity.
+
+The npm trusted publisher is scoped to `valentindoering/convex-runtime-tables`,
+workflow filename `release.yml`, and environment `npm-release`. The GitHub
+environment restricts deployment branches to `main`. Configure it once using
+`npm trust github convex-runtime-tables --repo valentindoering/convex-runtime-tables --file release.yml --env npm-release --allow-publish --yes`;
+npm requires the maintainer's security key for this setup. Subsequent CI
+publications require no interactive npm login. See
+[npm's trusted publishing instructions](https://docs.npmjs.com/trusted-publishers/).
+
+To check the trust configuration without publishing, dispatch
+`gh workflow run release.yml --ref main -f operation=check-auth`. This exercises
+the real GitHub-to-npm token exchange and discards the token. It does not run
+the release gates and cannot certify a package candidate.
+
+Never republish an existing version. Advance the alpha version and changelog,
+then rerun CI, hosted gates, and review for the resulting main commit.
 
 Do not assign `latest` or describe the alpha as production-authoritative before
 the release review and limited non-authoritative integration have passed.

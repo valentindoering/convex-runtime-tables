@@ -1,33 +1,21 @@
-# Publishing is blocked
+# Alpha publishing
 
-This repository is private and unpublished. `package.json` has `private: true`.
-`prepublishOnly`, `preversion`, `version`, `alpha`, and `release` all exit with
-a failure. No workflow publishes a package or creates a release.
+The repository is public. `convex-runtime-tables@0.1.0-alpha.1` was published
+from commit `23baf0b01586177b940b1e9543cf672cf186468d` on October 10, 2026. Use
+the `alpha` distribution tag. Alpha approval does not establish readiness for
+authoritative production data.
 
-Do not enable publishing until a fresh production release review gives an
-affirmative GO. The review must confirm every P0/P1 item, deterministic race and
-oracle coverage, packed clean-consumer codegen/query/mutation, genuine
-two-client reactivity, and the 100,000-row live-write benchmark.
+Follow [the release procedure](docs/npm-release.md). Each new candidate requires
+a fresh review, successful CI, and the hosted two-client and 100k live-write
+gates for its exact remote-main commit. Previous results cannot certify a new
+commit. `scripts/check-release.mjs` and `scripts/publish-alpha.mjs` enforce
+these requirements.
 
-After that approval, the first permitted artifact is `0.1.0-alpha.1` on the
-`alpha` dist-tag. A limited non-authoritative Ente integration must precede any
-production-authoritative use.
+The `Publish alpha` GitHub Actions workflow publishes through npm trusted
+publishing with OIDC and provenance. It requires the reviewed SHA and a link to
+the review evidence. It does not publish automatically on a push or infer a
+review approval from a passing test. The `npm-release` environment permits only
+`main`; no long-lived npm write token is stored in GitHub.
 
-The eventual release gate is mandatory:
-
-```sh
-npm ci
-npm run format
-npm run lint
-npm run typecheck
-npm test
-npm run test:race
-npm run test:coverage
-npm run build
-npm run test:consumer
-npm run test:scale
-```
-
-Do not describe a skipped or failing command as passing. Do not publish directly
-with `npm publish`; release automation must fail closed unless every required
-check has a recorded successful run and the review approval is linked.
+Do not weaken checks, force-push, assign `latest`, or describe a skipped or
+failing gate as passing.
