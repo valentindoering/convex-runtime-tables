@@ -31,20 +31,12 @@ const exchange = await fetch(
   },
 );
 assert.equal(exchange.status, 201, "npm must accept this trusted publisher");
-const credential = await exchange.json();
-const { token, token_type, expires } = credential;
-console.log(
-  JSON.stringify({
-    responseFields: Object.keys(credential),
-    token_type,
-    expires,
-    created: credential.created,
-    currentTime: new Date().toISOString(),
-  }),
-);
+const { token, token_type, expires } = await exchange.json();
 assert.equal(token_type, "oidc");
 assert.ok(token, "npm response must contain a package-scoped token");
-assert.ok(Date.parse(expires) > Date.now(), "npm token must be unexpired");
+const expiresAt =
+  typeof expires === "number" ? expires * 1000 : Date.parse(expires);
+assert.ok(expiresAt > Date.now(), "npm token must be unexpired");
 console.log(
   "npm accepted GitHub OIDC for convex-runtime-tables; token discarded",
 );
