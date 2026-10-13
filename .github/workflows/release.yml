@@ -97,4 +97,5 @@ jobs:
             .release/manifest.json
             .release/verification.json
             .release/*.tgz
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: error
