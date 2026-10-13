@@ -89,17 +89,34 @@ To check the trust configuration without publishing, dispatch
 the real GitHub-to-npm token exchange and discards the token. It does not run
 the release gates and cannot certify a package candidate.
 
-Enable `Allow npm dist-tag` on the same npm trusted publisher so the workflow
-can remove an unintended `latest` tag after publishing. This permission applies
-to all package tags; the workflow limits removal to `latest` pointing at an
-already published alpha whose tarball and integrity match its inspected
-manifest. It refuses to remove `latest` from any other version. To retry this
-cleanup without publishing, run
-`gh workflow run release.yml --ref main -f operation=repair-tags`. That
-operation cannot publish or approve a new candidate.
+To verify the already published package without publishing again, run
+`gh workflow run release.yml --ref main -f operation=verify-existing`. It checks
+the registry tarball, tags, integrity, clean installation, codegen and
+two-client reactivity. It saves verification evidence and cannot publish or
+approve a new candidate. The report distinguishes the inspected checkout from
+the original published commit.
+
+## npm first-publication tag behavior
+
+npm assigns `latest` on a package's first publication even with `--tag alpha`. A
+matching [npm issue](https://github.com/npm/cli/issues/8490) reports the same
+HTTP 400 on removal. This package's removal attempts failed with both
+interactive 2FA and authenticated OIDC, including the October 13 retry.
+Authentication is working; additional login attempts do not resolve the tag
+rejection.
+
+The registry policy therefore allows either no `latest` tag or the exact
+`0.1.0-alpha.1` baseline with its reviewed integrity. Later alpha releases must
+keep `latest` at that first version; pointing it at another alpha, a stable
+version, or a placeholder fails verification. All releases still require `alpha`
+to point to the inspected candidate and its tarball hashes to match. Promotion
+to stable requires a separate release decision and policy change. An unversioned
+install resolves to npm's initial alpha; applications must pin an exact alpha
+version.
 
 Never republish an existing version. Advance the alpha version and changelog,
 then rerun CI, hosted gates, and review for the resulting main commit.
 
-Do not assign `latest` or describe the alpha as production-authoritative before
-the release review and limited non-authoritative integration have passed.
+Do not promote `latest` or describe the alpha as production-authoritative before
+the separate stable release review and limited non-authoritative integration
+have passed.

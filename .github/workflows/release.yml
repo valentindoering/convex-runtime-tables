@@ -5,10 +5,9 @@ on:
     inputs:
       operation:
         description:
-          Publish a reviewed alpha, check npm OIDC, or repair existing alpha
-          tags
+          Publish a reviewed alpha, check npm OIDC, or verify an existing alpha
         type: choice
-        options: [publish, check-auth, repair-tags]
+        options: [publish, check-auth, verify-existing]
         default: publish
       reviewed_sha:
         description:
@@ -57,39 +56,41 @@ jobs:
           assert.equal(review.protocol, 'https:');
           NODE
       - run: npm ci
+      - name: Test alpha tag policy
+        run: node --test scripts/check-alpha-tag-policy.mjs
       - name: Require exact-commit CI and hosted release gates
         if: inputs.operation == 'publish'
         run: node scripts/check-release.mjs
       - name: Check trusted publisher authentication
         run: node scripts/check-npm-oidc.mjs
-      - name: Inspect tarball for existing alpha tag repair
-        if: inputs.operation == 'repair-tags'
+      - name: Inspect tarball for existing alpha verification
+        if: inputs.operation == 'verify-existing'
         run: npm run release:prepare
       - name: Publish inspected alpha tarball with npm OIDC
         if: inputs.operation == 'publish'
         env:
           npm_config_provenance: "true"
         run: npm run alpha
-      - name: Remove an unintended latest tag from the matching published alpha
-        if: inputs.operation == 'publish' || inputs.operation == 'repair-tags'
-        run: |
-          npm install --global npm@11.21.0
-          node scripts/repair-alpha-tag.mjs
       - name: Verify registry version, alpha tag, and tarball integrity
-        if: inputs.operation == 'publish' || inputs.operation == 'repair-tags'
+        if:
+          inputs.operation == 'publish' || inputs.operation == 'verify-existing'
         run: node scripts/verify-published.mjs
       - name: Install registry package and verify two-client reactivity
-        if: inputs.operation == 'publish'
+        if:
+          inputs.operation == 'publish' || inputs.operation == 'verify-existing'
         run: node scripts/consumer-smoke.mjs --published
       - name: Save release evidence
-        if: inputs.operation == 'publish'
+        if:
+          inputs.operation == 'publish' || inputs.operation == 'verify-existing'
         env:
           REVIEW_URL: ${{ inputs.review_url }}
         run: |
           printf 'Review: %s\n' "$REVIEW_URL" >> "$GITHUB_STEP_SUMMARY"
           cat .release/verification.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
-        if: inputs.operation == 'publish' && always()
+        if:
+          (inputs.operation == 'publish' || inputs.operation ==
+          'verify-existing') && always()
         with:
           name: alpha-release-evidence
           path: |

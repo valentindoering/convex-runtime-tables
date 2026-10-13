@@ -22,6 +22,8 @@ jobs:
       - run: npm ci
       - run: npm run format
       - run: npm run lint
+      - name: Test alpha tag policy
+        run: node --test scripts/check-alpha-tag-policy.mjs
       - name: Check component codegen freshness
         env:
           CONVEX_AGENT_MODE: anonymous

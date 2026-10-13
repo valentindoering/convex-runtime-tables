@@ -17,5 +17,14 @@ the review evidence. It does not publish automatically on a push or infer a
 review approval from a passing test. The `npm-release` environment permits only
 `main`; no long-lived npm write token is stored in GitHub.
 
-Do not weaken checks, force-push, assign `latest`, or describe a skipped or
-failing gate as passing.
+Do not weaken release review, CI, hosted gates, or artifact checks. Do not
+force-push or describe a skipped or failing gate as passing. All alpha publishes
+must use `--tag alpha` and must never move `latest`.
+
+npm automatically assigned `latest` to the first alpha and rejects deleting it.
+The tag policy permits only that exact first-publication baseline, with its
+reviewed integrity. Later alpha releases must leave it at `0.1.0-alpha.1`. This
+narrow first-publication exception was approved on October 13, 2026. This
+registry behavior does not establish production readiness; consumers must pin an
+explicit alpha version. See
+[the npm report](https://github.com/npm/cli/issues/8490).
